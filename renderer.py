@@ -105,11 +105,16 @@ def _find_system_font() -> Optional[str]:
 
     candidates = [
         # Linux：优先使用 Noto CJK
+        str(Path(__file__).resolve().parent / "NotoSansCJKsc-Regular.otf"),
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
 
         # Windows
+        "C:/Windows/Fonts/NotoSansCJKsc-Regular.otf",
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msyh.ttf",
         "C:/Windows/Fonts/simsun.ttc",
@@ -197,6 +202,34 @@ def _draw_progress_bar(
         )
 
 
+def _share_label(value: Any) -> str:
+    """Format NewAPI's share ratio (0.2534) as a human percentage."""
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return "占比暂不可获取"
+    if not 0 <= ratio <= 1:
+        return "占比暂不可获取"
+    return f"{ratio:.2%}"
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _fit_text(draw, value: str, font, max_width: int) -> str:
+    """Trim a label by rendered width so it never collides with its neighbor."""
+    value = str(value)
+    if draw.textlength(value, font=font) <= max_width:
+        return value
+    while value and draw.textlength(value + "…", font=font) > max_width:
+        value = value[:-1]
+    return value + "…" if value else "…"
+
+
 class DarkCardRenderer:
     """Lightweight, compact dark theme image renderer using Pillow."""
 
@@ -221,11 +254,11 @@ class DarkCardRenderer:
         footer_note: Optional[str] = None,
     ) -> str:
         """Render a compact, elegant command menu."""
-        width = 720
+        width = 820
         padding = 24
         header_h = 75
         sec_header_h = 32
-        item_h = 28
+        item_h = 42
 
         total_items = sum(len(items) for _, items in sections)
         content_h = (
@@ -288,8 +321,11 @@ class DarkCardRenderer:
         # Sections
         for sec_title, items in sections:
             # Section header badge
+            section_width = min(
+                250, int(draw.textlength(sec_title, font=font_sec)) + 22
+            )
             draw.rounded_rectangle(
-                [(padding + 20, curr_y), (padding + 20 + 130, curr_y + 24)],
+                [(padding + 20, curr_y), (padding + 20 + section_width, curr_y + 24)],
                 radius=6,
                 fill=cls.BORDER_COLOR,
             )
@@ -302,16 +338,16 @@ class DarkCardRenderer:
             curr_y += 32
 
             for cmd, desc in items:
-                # Command
+                # Put descriptions on their own line to keep long Chinese
+                # commands from colliding with the explanatory text.
                 _draw_text(draw,
                     (padding + 24, curr_y),
                     cmd,
                     fill=cls.ACCENT_GREEN,
                     font=font_cmd,
                 )
-                # Description
                 _draw_text(draw,
-                    (padding + 230, curr_y),
+                    (padding + 42, curr_y + 18),
                     desc,
                     fill=cls.TEXT_SECONDARY,
                     font=font_desc,
@@ -344,15 +380,14 @@ class DarkCardRenderer:
     def render_user_rankings(
         cls,
         period_label: str,
-        rows: List[
-            Tuple[int, str, str, str]
-        ],  # (rank, name, quota_formatted, extra_info)
+        rows: List[Tuple[int, str, str, str, int]],
+        site_name: str = "NewAPI",
     ) -> str:
-        """Render Top 10 user rankings card."""
-        width = 720
+        """Render a user consumption list with relative amount bars."""
+        width = 760
         padding = 24
         header_h = 70
-        row_h = 38
+        row_h = 58
         height = padding * 2 + header_h + len(rows) * row_h + 30
 
         img = Image.new("RGB", (width, height), color=cls.BG_COLOR)
@@ -380,13 +415,13 @@ class DarkCardRenderer:
         )
         _draw_text(draw,
             (padding + 36, top_y - 2),
-            f"🏆 全站用户消耗排行 - {period_label} Top {len(rows)}",
+            f"🏆 {site_name} 用户消费排行 · {period_label}",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
         _draw_text(draw,
             (padding + 36, top_y + 26),
-            "按实际模型调用消耗金额统计",
+            "按实际调用金额排序，条形长度表示相对金额",
             fill=cls.TEXT_SECONDARY,
             font=font_sub,
         )
@@ -400,13 +435,14 @@ class DarkCardRenderer:
         curr_y += 12
 
         medals_color = {1: cls.ACCENT_YELLOW, 2: "#bac2de", 3: cls.ACCENT_PEACH}
+        max_quota = max((max(0, row[4]) for row in rows), default=0)
 
-        for rank, name, quota_str, extra in rows:
+        for rank, name, quota_str, extra, raw_quota in rows:
             bg_col = "#232338" if rank % 2 == 0 else cls.CARD_BG
             draw.rounded_rectangle(
                 [
                     (padding + 16, curr_y - 2),
-                    (width - padding - 16, curr_y + row_h - 6),
+                    (width - padding - 16, curr_y + row_h - 4),
                 ],
                 radius=6,
                 fill=bg_col,
@@ -414,39 +450,51 @@ class DarkCardRenderer:
 
             # Rank badge
             rank_color = medals_color.get(rank, cls.TEXT_MUTED)
-            rank_badge_text = f"#{rank}"
             _draw_text(draw,
                 (padding + 28, curr_y + 6),
-                rank_badge_text,
+                f"第 {rank} 名",
                 fill=rank_color,
                 font=font_rank,
             )
 
             # Username
+            value_width = int(draw.textlength(quota_str, font=font_val))
+            name_x = padding + 98
+            name_max_width = width - padding - 36 - value_width - name_x
             _draw_text(draw,
-                (padding + 85, curr_y + 7),
-                name[:24],
+                (name_x, curr_y + 6),
+                _fit_text(draw, name, font_name, name_max_width),
                 fill=cls.TEXT_PRIMARY,
                 font=font_name,
             )
 
-            # Extra info if any
+            val_bbox = draw.textbbox((0, 0), quota_str, font=font_val)
+            val_w = val_bbox[2] - val_bbox[0]
+            _draw_text(draw,
+                (width - padding - 30 - val_w, curr_y + 6),
+                quota_str,
+                fill=cls.ACCENT_GREEN,
+                font=font_val,
+            )
+
             if extra:
                 _draw_text(draw,
-                    (padding + 270, curr_y + 8),
+                    (name_x, curr_y + 31),
                     extra,
                     fill=cls.TEXT_MUTED,
                     font=font_sub,
                 )
-
-            # Quota formatted (right aligned)
-            val_bbox = draw.textbbox((0, 0), quota_str, font=font_val)
-            val_w = val_bbox[2] - val_bbox[0]
-            _draw_text(draw,
-                (width - padding - 30 - val_w, curr_y + 7),
-                quota_str,
-                fill=cls.ACCENT_GREEN,
-                font=font_val,
+            bar_x = padding + 290
+            bar_width = width - padding - 30 - bar_x
+            bar_percent = (max(0, raw_quota) / max_quota * 100) if max_quota else 0
+            _draw_progress_bar(
+                draw,
+                bar_x,
+                curr_y + 34,
+                bar_width,
+                8,
+                bar_percent,
+                fill_color=cls.ACCENT_BLUE,
             )
 
             curr_y += row_h
@@ -462,21 +510,32 @@ class DarkCardRenderer:
         period_label: str,
         models: List[Dict[str, Any]],
         vendors: List[Dict[str, Any]],
+        site_name: str = "NewAPI",
     ) -> str:
-        """Render model token consumption rankings card."""
-        width = 720
+        """Render model bars and a vendor share pie chart."""
+        width = 800
         padding = 24
-        header_h = 70
-        row_h = 32
+        header_h = 75
+        row_h = 48
         model_count = min(len(models), 10)
-        vendor_count = min(len(vendors), 5)
-        height = (
-            padding * 2
-            + header_h
-            + model_count * row_h
-            + (vendor_count * 28 + 40 if vendor_count else 0)
-            + 35
-        )
+        vendor_entries = []
+        if len(vendors) <= 5:
+            vendor_entries = list(vendors)
+        else:
+            vendor_entries = list(vendors[:4])
+            remainder = vendors[4:]
+            vendor_entries.append(
+                {
+                    "vendor": "其他",
+                    "total_tokens": sum(
+                        _int_or_zero(row.get("total_tokens"))
+                        for row in remainder
+                        if isinstance(row, dict)
+                    ),
+                }
+            )
+        chart_h = 170 if vendor_entries else 0
+        height = padding * 2 + header_h + model_count * row_h + chart_h + 35
 
         img = Image.new("RGB", (width, height), color=cls.BG_COLOR)
         draw = ImageDraw.Draw(img)
@@ -492,6 +551,7 @@ class DarkCardRenderer:
         font_title = _get_font(20)
         font_sub = _get_font(13)
         font_item = _get_font(13)
+        font_small = _get_font(12)
 
         top_y = padding + 18
         draw.rounded_rectangle(
@@ -501,13 +561,13 @@ class DarkCardRenderer:
         )
         _draw_text(draw,
             (padding + 36, top_y - 2),
-            f"🤖 模型消耗排行 - {period_label} Top {model_count}",
+            f"🤖 {site_name} 模型调用排行 · {period_label}",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
         _draw_text(draw,
             (padding + 36, top_y + 26),
-            "各模型与厂商 Token 调用量及占比",
+            "模型条形图按词元数比较；百分比保留两位小数",
             fill=cls.TEXT_SECONDARY,
             font=font_sub,
         )
@@ -520,39 +580,56 @@ class DarkCardRenderer:
         )
         curr_y += 12
 
+        max_tokens = max(
+            (
+                _int_or_zero(m.get("total_tokens"))
+                for m in models[:model_count]
+                if isinstance(m, dict)
+            ),
+            default=0,
+        )
         for i, m in enumerate(models[:model_count], 1):
-            mname = m.get("model_name", "未知")
-            vendor = m.get("vendor", "")
-            tokens = m.get("total_tokens", 0)
-            share = m.get("share", 0.0)
-
+            if not isinstance(m, dict):
+                continue
+            mname = str(m.get("model_name") or "未知模型")
+            vendor = str(m.get("vendor") or "")
+            tokens = _int_or_zero(m.get("total_tokens"))
+            share = _share_label(m.get("share"))
+            model_display = f"{mname}（{vendor}）" if vendor else mname
             _draw_text(draw,
-                (padding + 24, curr_y),
-                f"{i}.",
+                (padding + 24, curr_y + 2),
+                f"第 {i} 名",
                 fill=cls.ACCENT_YELLOW if i <= 3 else cls.TEXT_MUTED,
                 font=font_item,
             )
-            model_display = f"{mname} [{vendor}]" if vendor else mname
             _draw_text(draw,
-                (padding + 52, curr_y),
-                model_display[:30],
+                (padding + 90, curr_y + 2),
+                _fit_text(draw, model_display, font_item, 350),
                 fill=cls.TEXT_PRIMARY,
                 font=font_item,
             )
-
-            tok_str = f"{tokens:,} Tokens ({share:.1f}%)"
-            bbox = draw.textbbox((0, 0), tok_str, font=font_item)
-            w = bbox[2] - bbox[0]
+            stat_text = f"{tokens:,} 个词元  ·  {share}"
+            stat_width = int(draw.textlength(stat_text, font=font_item))
             _draw_text(draw,
-                (width - padding - 26 - w, curr_y),
-                tok_str,
+                (width - padding - 26 - stat_width, curr_y + 2),
+                stat_text,
                 fill=cls.ACCENT_GREEN,
                 font=font_item,
             )
-
+            bar_x = padding + 90
+            bar_width = width - padding - 32 - bar_x
+            _draw_progress_bar(
+                draw,
+                bar_x,
+                curr_y + 25,
+                bar_width,
+                8,
+                (tokens / max_tokens * 100) if max_tokens else 0,
+                fill_color=cls.ACCENT_BLUE,
+            )
             curr_y += row_h
 
-        if vendor_count:
+        if vendor_entries:
             curr_y += 10
             draw.line(
                 [(padding + 20, curr_y), (width - padding - 20, curr_y)],
@@ -562,32 +639,79 @@ class DarkCardRenderer:
             curr_y += 12
             _draw_text(draw,
                 (padding + 24, curr_y),
-                "🏢 厂商调用份额占比:",
+                "🏢 厂商词元占比",
                 fill=cls.ACCENT_PEACH,
                 font=font_sub,
             )
-            curr_y += 24
+            curr_y += 28
+            valid_vendors = []
+            for v in vendor_entries:
+                if not isinstance(v, dict):
+                    continue
+                tokens = _int_or_zero(v.get("total_tokens"))
+                valid_vendors.append((str(v.get("vendor") or "其他"), tokens, v.get("share")))
+            vendor_total = sum(item[1] for item in valid_vendors)
 
-            for v in vendors[:vendor_count]:
-                vname = v.get("vendor", "其他")
-                tokens = v.get("total_tokens", 0)
-                share = v.get("share", 0.0)
+            pie_x, pie_y, pie_size = padding + 28, curr_y, 118
+            colors = [
+                cls.ACCENT_BLUE,
+                cls.ACCENT_GREEN,
+                cls.ACCENT_YELLOW,
+                cls.ACCENT_PEACH,
+                cls.ACCENT_RED,
+            ]
+            if vendor_total:
+                start_angle = -90.0
+                for i, (_, tokens, _) in enumerate(valid_vendors):
+                    extent = tokens / vendor_total * 360
+                    if extent > 0:
+                        draw.pieslice(
+                            (pie_x, pie_y, pie_x + pie_size, pie_y + pie_size),
+                            start=start_angle,
+                            end=start_angle + extent,
+                            fill=colors[i % len(colors)],
+                            outline=cls.CARD_BG,
+                        )
+                    start_angle += extent
+            else:
+                draw.ellipse(
+                    (pie_x, pie_y, pie_x + pie_size, pie_y + pie_size),
+                    fill=cls.BORDER_COLOR,
+                )
                 _draw_text(draw,
-                    (padding + 30, curr_y),
-                    f"• {vname}",
+                    (pie_x + 23, pie_y + 50),
+                    "暂无数据",
+                    fill=cls.TEXT_SECONDARY,
+                    font=font_small,
+                )
+
+            legend_x = pie_x + pie_size + 28
+            legend_width = width - padding - 38 - legend_x
+            for i, (vname, tokens, share_value) in enumerate(valid_vendors):
+                legend_y = curr_y + i * 25
+                draw.rounded_rectangle(
+                    (legend_x, legend_y + 3, legend_x + 10, legend_y + 13),
+                    radius=3,
+                    fill=colors[i % len(colors)],
+                )
+                label = _fit_text(draw, vname, font_item, max(80, legend_width - 220))
+                _draw_text(draw,
+                    (legend_x + 18, legend_y),
+                    label,
                     fill=cls.TEXT_SECONDARY,
                     font=font_item,
                 )
-                v_str = f"{tokens:,} Tokens ({share:.1f}%)"
-                bbox = draw.textbbox((0, 0), v_str, font=font_item)
-                w = bbox[2] - bbox[0]
+                share = _share_label(share_value)
+                if vname == "其他" and share == "占比暂不可获取" and vendor_total:
+                    share = _share_label(tokens / vendor_total)
+                value = f"{tokens:,} 个词元 · {share}"
+                value_w = int(draw.textlength(value, font=font_small))
                 _draw_text(draw,
-                    (width - padding - 26 - w, curr_y),
-                    v_str,
+                    (width - padding - 34 - value_w, legend_y + 1),
+                    value,
                     fill=cls.TEXT_PRIMARY,
-                    font=font_item,
+                    font=font_small,
                 )
-                curr_y += 24
 
         file_path = _get_temp_path()
         img.save(file_path, format="PNG")
@@ -697,7 +821,7 @@ class DarkCardRenderer:
         )
         alloc_text = format_bytes(mem_alloc)
         sys_text = format_bytes(mem_sys)
-        mem_text = f"Alloc {alloc_text} / Sys {sys_text}"
+        mem_text = f"已分配 {alloc_text} / 进程持有 {sys_text}"
         _draw_text(draw,
             (padding + 120, curr_y),
             mem_text,
@@ -840,6 +964,7 @@ class DarkCardRenderer:
         cls,
         channels: List[Dict[str, Any]],
         total: int,
+        site_name: str = "NewAPI",
     ) -> str:
         """Render upstream channels list card."""
         width = 720
@@ -871,7 +996,7 @@ class DarkCardRenderer:
         )
         _draw_text(draw,
             (padding + 36, top_y - 2),
-            f"📡 上游渠道配置 (前 {len(channels)} / 共 {total} 个)",
+            f"📡 {site_name} 上游渠道配置（前 {len(channels)} / 共 {total} 个）",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )

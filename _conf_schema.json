@@ -2,21 +2,21 @@
     "site_url": {
         "description": "NewAPI 站点地址",
         "type": "string",
-        "hint": "NewAPI 站点 Base URL，例如 https://api.yourdomain.com 或 http://127.0.0.1:3000",
+        "hint": "填写 NewAPI 站点根地址，例如 https://api.example.com 或 http://127.0.0.1:3000。",
         "default": "",
         "obvious_hint": true
     },
     "api_token": {
-        "description": "访问令牌 (API Token)",
+        "description": "NewAPI 管理访问令牌",
         "type": "string",
-        "hint": "填入 NewAPI 访问令牌 (PAT / nap_... 或系统令牌)。性能监控要求具有 Root 权限；不要填写普通模型 API Key",
+        "hint": "填写具有相应管理权限的 NewAPI 访问令牌。性能监控要求超级管理员权限；请勿填写普通模型调用密钥。",
         "default": "",
         "obvious_hint": true
     },
     "api_user_id": {
-        "description": "NewAPI 用户 ID",
+        "description": "NewAPI 管理员用户编号",
         "type": "string",
-        "hint": "填写访问令牌所属账户的数字用户 ID（GET /api/user/self 返回的 data.id）；性能接口需要 Root 权限",
+        "hint": "填写令牌所属账户的数字用户编号，可从 GET /api/user/self 返回内容的 data.id 获取。性能接口要求超级管理员权限。",
         "default": "",
         "obvious_hint": true
     },
@@ -33,21 +33,21 @@
         "default": true
     },
     "request_timeout": {
-        "description": "请求超时时间 (秒)",
+        "description": "请求超时时间（秒）",
         "type": "int",
         "hint": "与 NewAPI 站点通信的超时时间（秒）",
         "default": 15
     },
     "proxy": {
-        "description": "HTTP 代理",
+        "description": "网络代理地址",
         "type": "string",
-        "hint": "可选。例如 http://127.0.0.1:7890，留空则直连",
+        "hint": "可选设置代理，例如 http://127.0.0.1:7890；留空表示直接连接。",
         "default": ""
     },
     "quota_per_unit": {
-        "description": "额度换算比例 ($1 等于多少点)",
+        "description": "额度换算比例（1 美元对应点数）",
         "type": "int",
-        "hint": "NewAPI 默认 500000 即 50 万点 = $1 美元。插件会自动尝试从站点同步，此处作为回退默认值",
+        "hint": "NewAPI 默认 1 美元对应 50 万点。插件会优先从站点读取，此处作为读取失败时的备用值。",
         "default": 500000
     }
 }

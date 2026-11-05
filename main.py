@@ -7,6 +7,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.all import *
@@ -103,6 +104,7 @@ CMD_MAPPING = {
     "my_stat": "my_stat",
     "mystat": "my_stat",
     "个人统计": "my_stat",
+    "我的统计": "my_stat",
     "我的消耗": "my_stat",
     "stat": "stat",
     "site_stat": "stat",
@@ -113,6 +115,7 @@ CMD_MAPPING = {
     "rank": "ranking",
     "排行": "ranking",
     "排行榜": "ranking",
+    "用户排行": "ranking",
     "消耗排行": "ranking",
     "model_ranking": "model_ranking",
     "models_ranking": "model_ranking",
@@ -207,7 +210,10 @@ class NewApiPlugin(Star):
         self.backups_dir = self.data_dir / "backups"
         self.backups_dir.mkdir(parents=True, exist_ok=True)
         self.client = self._init_client()
-        self._load_cache()
+        cache = self._load_cache()
+        self._site_name_cache = str(cache.get("system_name") or "").strip()
+        self._site_name_base_url = self.client.base_url
+        self._site_name_checked_at = 0.0
 
     def _init_client(self) -> NewAPIClient:
         site_url = self.config.get("site_url", "")
@@ -228,6 +234,32 @@ class NewApiPlugin(Star):
     def _refresh_client(self) -> NewAPIClient:
         self.client = self._init_client()
         return self.client
+
+    async def _get_site_name(self, client: NewAPIClient) -> str:
+        if self._site_name_base_url != client.base_url:
+            self._site_name_cache = ""
+            self._site_name_checked_at = 0.0
+            self._site_name_base_url = client.base_url
+
+        now = time.monotonic()
+        if not client.base_url:
+            return self._site_name_cache or "NewAPI"
+        if not self._site_name_cache or now - self._site_name_checked_at >= 60:
+            try:
+                status = await client.get_status()
+                site_name = status.get("system_name") if isinstance(status, dict) else None
+                if site_name:
+                    self._site_name_cache = str(site_name).strip()
+                    self._save_cache("system_name", self._site_name_cache)
+            except Exception as e:
+                logger.debug("[NewAPI] 获取站点名称失败，使用缓存或域名: %s", e)
+            self._site_name_checked_at = now
+
+        return (
+            self._site_name_cache
+            or urlsplit(client.base_url).hostname
+            or "NewAPI"
+        )
 
     # --- Cache Management ---
 
@@ -329,64 +361,66 @@ class NewApiPlugin(Star):
         严禁调用 event.stop_event()，确保用户知晓原因并能正常收到回复。
         """
         if not self._is_admin_enabled():
-            return "❌ 管理功能已被管理员在配置中禁用 (enable_admin=false)。"
+            return "❌ 管理功能已在插件设置中关闭。"
         admin_only = bool(self.config.get("admin_only", True))
         if admin_only and not self._is_admin(event):
             sender_id = event.get_sender_id()
             return (
-                f"❌ 权限不足：该指令仅限机器人管理员使用。\n"
-                f"• 当前用户 ID: {sender_id}\n"
-                f"• 提示：管理员可在后台配置或通过 /op {sender_id} 赋予管理员权限。"
+            f"❌ 权限不足：该指令仅限机器人管理员使用。\n"
+            f"• 当前用户编号：{sender_id}\n"
+            f"• 管理员可在 AstrBot 管理面板中授予机器人管理员权限。"
             )
         return None
 
-    def _get_plain_menu_text(self, is_adm: bool) -> str:
+    def _get_plain_menu_text(self, is_adm: bool, site_name: str = "NewAPI") -> str:
         admin_status = "开启" if self._is_admin_enabled() else "关闭"
         lines = [
-            "📋 【NewAPI 站点服务菜单】",
+            f"📋 【{site_name} 服务菜单】",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            "📊 个人与查询指令：",
-            "• /newapi my (或 /newapi 余额) - 查询用量/余额/订阅",
-            "• /newapi bind <ID/用户名> - 绑定个人账号",
-            "• /newapi unbind - 解绑个人账号",
-            "• /newapi my_stat [today/week/month/all] - 个人消费统计",
-            "• /newapi stat [today/week/month/all] - 全站消耗与速率",
-            "• /newapi ranking [day/week/month/total] - 用户消耗排行榜",
-            "• /newapi model_ranking [today/week/month] - 模型调用排行",
-            "• /newapi status - 站点与服务器 CPU/内存状态",
-            "• /newapi redeem <兑换码> - 充值卡 CDK 兑换",
+            "📊 个人服务",
+            "• /newapi 个人 - 查询已绑定账号的余额、用量和订阅",
+            "• /newapi 绑定 <用户编号或用户名> - 绑定个人账号",
+            "• /newapi 解绑 - 解除当前账号绑定",
+            "• /newapi 我的统计 [今天/本周/本月/全部] - 查看个人消费统计",
+            "• /newapi 全站统计 [今天/本周/本月/全部] - 查看全站消费和请求速率",
+            "• /newapi 用户排行 [今天/本周/本月/总计] - 查看用户消费排行和图表",
+            "• /newapi 模型排行 [今日/本周/本月/本年] - 查看模型与厂商排行图表",
+            "• /newapi 状态 - 查看站点信息和远程资源数据",
+            "• /newapi 兑换 <兑换码> - 使用兑换码充值",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            f"👑 管理功能状态: {admin_status}",
+            f"👑 管理功能：{admin_status}",
         ]
         if self._is_admin_enabled() and is_adm:
-            lines.append("💡 管理员可输入 [/newapi admin] 查看完整管理菜单")
+            lines.append("💡 管理员可发送 /newapi 管理 查看完整菜单")
         return "\n".join(lines)
 
-    def _get_plain_admin_menu_text(self) -> str:
+    def _get_plain_admin_menu_text(self, site_name: str = "NewAPI") -> str:
         return "\n".join([
-            "👑 【NewAPI 站点管理菜单】",
+            f"👑 【{site_name} 管理菜单】",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            "👤 用户与额度管理：",
-            "• /newapi user <ID/用户名> - 查用户详细状态与余额",
-            "• /newapi create_user <账号> <密码> [昵称] - 创建普通用户",
-            "• /newapi add_quota <用户> <美元> - 充值增加额度",
-            "• /newapi sub_quota <用户> <美元> - 扣减指定额度",
-            "• /newapi set_quota <用户> <美元> - 直接设置额度",
-            "• /newapi enable_user <用户> - 解禁/启用账号",
-            "• /newapi disable_user <用户> - 封禁/禁用账号",
+            "👤 用户和额度",
+            "• /newapi 查用户 <用户编号或用户名> - 查看用户资料和余额",
+            "• /newapi 创建用户 <账号> <密码> [昵称] - 创建普通用户",
+            "• /newapi 加额度 <用户> <美元金额> - 增加用户额度",
+            "• /newapi 扣额度 <用户> <美元金额> - 扣减用户额度",
+            "• /newapi 设额度 <用户> <美元金额> - 设置用户额度",
+            "• /newapi 解封 <用户> - 启用用户账号",
+            "• /newapi 封号 <用户> - 禁用用户账号",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            "🎟️ 兑换码与渠道：",
-            "• /newapi create_cdk <面额> [数量] [名称] - 批量生成兑换码",
-            "• /newapi channels - 查看上游渠道配置与延迟",
-            "• /newapi test_channel [渠道ID] - 测试渠道网络速度",
+            "🎟️ 兑换码和渠道",
+            "• /newapi 生成兑换码 <美元面额> [数量] [名称] - 批量生成兑换码",
+            "• /newapi 渠道列表 - 查看上游渠道和响应时间",
+            "• /newapi 测试渠道 [渠道编号] - 测试渠道连接速度",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            "🔑 令牌与数据安全：",
-            "• /newapi token_list - 查看 API Key 列表",
-            "• /newapi token_add <名称> [额度] - 创建新的 API Key",
-            "• /newapi token_del <令牌ID> - 删除指定的 API Key",
-            "• /newapi token_key <令牌ID> - 查看完整秘钥 (sk-...)",
-            "• /newapi backup - 打包导出用户绑定与配置为 ZIP",
-            "• /newapi restore [文件名] - 一键复原配置数据",
+            "🔑 访问令牌",
+            "• /newapi 令牌列表 - 查看已创建的访问令牌",
+            "• /newapi 创建令牌 <名称> [额度美元] - 创建访问令牌",
+            "• /newapi 删除令牌 <编号> - 删除访问令牌",
+            "• /newapi 查看秘钥 <编号> - 查看令牌完整密钥",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "💾 数据备份和恢复",
+            "• /newapi 备份 - 导出绑定数据和配置文件",
+            "• /newapi 恢复 [文件名] - 从备份文件恢复数据",
         ])
 
     # --- Helper Utilities ---
@@ -396,7 +430,7 @@ class NewApiPlugin(Star):
         end_ts = int(now.timestamp())
         period = (period or "day").lower().strip()
 
-        if period in ["day", "today", "天", "日", "今日"]:
+        if period in ["day", "today", "天", "日", "今日", "今天"]:
             start_of_day = datetime.datetime(now.year, now.month, now.day, 0, 0, 0)
             return int(start_of_day.timestamp()), end_ts, "今日"
         elif period in ["yesterday", "昨", "昨日"]:
@@ -418,7 +452,7 @@ class NewApiPlugin(Star):
         elif period in ["month", "月", "本月", "30d", "30天"]:
             start_of_month = now - datetime.timedelta(days=30)
             return int(start_of_month.timestamp()), end_ts, "近 30 天"
-        elif period in ["total", "all", "总", "全部", "历史"]:
+        elif period in ["total", "all", "总", "总计", "全部", "历史"]:
             return 0, end_ts, "历史总计"
         else:
             start_of_day = datetime.datetime(now.year, now.month, now.day, 0, 0, 0)
@@ -434,19 +468,24 @@ class NewApiPlugin(Star):
             user_id = int(identifier)
             try:
                 user = await client.get_user(user_id)
-                if user and "username" in user:
-                    return user_id, user.get("username", str(user_id))
-            except Exception:
-                pass
-            return user_id, str(user_id)
+            except Exception as e:
+                logger.warning("[NewAPI] 验证用户编号 %s 失败: %s", user_id, e)
+                return None, None
+            if not isinstance(user, dict) or not user.get("username"):
+                return None, None
+            return user_id, str(user["username"])
 
         try:
             users = await client.search_users(identifier)
             for u in users:
+                if not isinstance(u, dict):
+                    continue
                 if str(u.get("username", "")).lower() == identifier.lower():
                     return int(u.get("id")), u.get("username")
             if users:
-                first = users[0]
+                first = next((user for user in users if isinstance(user, dict)), None)
+                if not first:
+                    return None, None
                 return int(first.get("id")), first.get("username")
         except Exception:
             pass
@@ -553,38 +592,37 @@ class NewApiPlugin(Star):
     # ==========================================
 
     async def menu(self, event: AstrMessageEvent):
-        """显示 NewAPI 普通查询功能菜单 (PIL暗色图或纯文本)"""
+        """显示中文个人功能菜单。"""
         admin_status = "开启" if self._is_admin_enabled() else "关闭"
         is_adm = self._is_admin(event)
+        client = self._refresh_client()
+        site_name = await self._get_site_name(client)
 
         sections = [
             (
-                "📊 个人与查询指令",
+                "📊 个人服务",
                 [
-                    ("/newapi my [或 /newapi 余额]", "查询绑定账户余额、用量与订阅"),
-                    ("/newapi bind <用户ID/名>", "绑定个人的 NewAPI 账号"),
-                    ("/newapi unbind [或 /newapi 解绑]", "解绑当前绑定的 NewAPI 账号"),
-                    ("/newapi my_stat [天/周/月/总]", "查询个人指定时间内的消费统计"),
-                    ("/newapi stat [天/周/月/总]", "查询 NewAPI 全站总消耗与速率"),
-                    ("/newapi ranking [天/周/月/总]", "查看全站用户消耗排行榜 Top 10"),
-                    ("/newapi model_ranking [周期]", "查看热门模型与厂商调用占比排行"),
-                    (
-                        "/newapi status [或 /newapi 状态]",
-                        "查看站点配置与 CPU/内存/磁盘状态",
-                    ),
-                    ("/newapi redeem <兑换码>", "使用充值卡 CDK 兑换额度"),
+                    ("/newapi 个人", "查看已绑定账号的余额、用量和订阅"),
+                    ("/newapi 绑定 <用户编号或用户名>", "绑定你自己的 NewAPI 账号"),
+                    ("/newapi 解绑", "解除当前账号绑定"),
+                    ("/newapi 我的统计 [今天/本周/本月/全部]", "查看已绑定账号的消费统计"),
+                    ("/newapi 全站统计 [今天/本周/本月/全部]", "查看全站消费和请求速率"),
+                    ("/newapi 用户排行 [今天/本周/本月/总计]", "查看消费排行和占比图"),
+                    ("/newapi 模型排行 [今日/本周/本月/本年]", "查看模型柱状图和厂商占比图"),
+                    ("/newapi 状态", "查看站点版本和可用的远程资源数据"),
+                    ("/newapi 兑换 <兑换码>", "使用兑换码充值"),
                 ],
             )
         ]
 
-        footer = f"管理功能状态: {admin_status}"
+        footer = f"管理功能：{admin_status}"
         if self._is_admin_enabled() and is_adm:
-            footer += "  |  管理员可输入 [/newapi admin] 查看管理菜单"
+            footer += "  |  管理员可发送 /newapi 管理 查看管理菜单"
 
         try:
             img_path = DarkCardRenderer.render_menu(
-                title="NewAPI 站点服务菜单",
-                subtitle="输入指令即可触发对应功能（支持中文与无空格缩写）",
+                title=f"{site_name} 服务菜单",
+                subtitle="选择下方中文指令即可使用",
                 sections=sections,
                 footer_note=footer,
             )
@@ -593,85 +631,75 @@ class NewApiPlugin(Star):
         except Exception as e:
             logger.warning(f"[NewAPI] 暗色卡片菜单渲染异常，降级为纯文本回复: {e}")
 
-        return event.plain_result(self._get_plain_menu_text(is_adm))
+        return event.plain_result(self._get_plain_menu_text(is_adm, site_name))
 
     async def admin_menu(self, event: AstrMessageEvent):
-        """显示 NewAPI 管理员专用菜单 (PIL暗色图或纯文本)"""
+        """显示中文管理员菜单。"""
         err = self._check_admin_permission(event)
         if err:
             return event.plain_result(err)
 
         sections = [
             (
-                "👤 用户与额度管理",
+                "👤 用户和额度",
                 [
-                    ("/newapi user <ID/用户名>", "查询指定用户的完整状态与余额"),
-                    ("/newapi create_user <账号> <密码>", "创建新的普通用户账号"),
-                    ("/newapi add_quota <用户> <美元>", "给用户充值增加额度 (如 5.0)"),
-                    ("/newapi sub_quota <用户> <美元>", "扣减指定用户的额度"),
-                    ("/newapi set_quota <用户> <美元>", "重置覆盖指定用户的额度"),
-                    ("/newapi enable_user <用户>", "解禁/启用指定用户账号"),
-                    ("/newapi disable_user <用户>", "封禁/禁用指定用户账号"),
+                    ("/newapi 查用户 <用户编号或用户名>", "查看用户资料和余额"),
+                    ("/newapi 创建用户 <账号> <密码>", "创建普通用户"),
+                    ("/newapi 加额度 <用户> <美元金额>", "给用户增加额度"),
+                    ("/newapi 扣额度 <用户> <美元金额>", "扣减用户额度"),
+                    ("/newapi 设额度 <用户> <美元金额>", "设置用户额度"),
+                    ("/newapi 解封 <用户>", "启用用户账号"),
+                    ("/newapi 封号 <用户>", "禁用用户账号"),
                 ],
             ),
             (
-                "🎟️ 兑换码与渠道测速",
+                "🎟️ 兑换码和渠道",
                 [
-                    (
-                        "/newapi create_cdk <面额> [数量]",
-                        "批量并发生成指定面额的兑换码",
-                    ),
-                    ("/newapi channels", "查看所有上游渠道配置与延迟"),
-                    ("/newapi test_channel [渠道ID]", "测试渠道网络连接与响应速度"),
+                    ("/newapi 生成兑换码 <美元面额> [数量]", "批量生成兑换码"),
+                    ("/newapi 渠道列表", "查看上游渠道和响应时间"),
+                    ("/newapi 测试渠道 [渠道编号]", "测试渠道连接速度"),
                 ],
             ),
             (
-                "🔑 API Key 秘钥管理",
+                "🔑 访问令牌",
                 [
-                    ("/newapi token_list", "查看当前账户拥有的 API Key 列表"),
-                    (
-                        "/newapi token_add <名称> [额度]",
-                        "创建新的 API Key (留空为无限)",
-                    ),
-                    ("/newapi token_del <令牌ID>", "删除指定的 API Key"),
-                    ("/newapi token_key <令牌ID>", "提取完整的 API Key 秘钥 (sk-...)"),
+                    ("/newapi 令牌列表", "查看已创建的访问令牌"),
+                    ("/newapi 创建令牌 <名称> [额度美元]", "创建访问令牌"),
+                    ("/newapi 删除令牌 <编号>", "删除访问令牌"),
+                    ("/newapi 查看秘钥 <编号>", "查看令牌完整密钥"),
                 ],
             ),
             (
-                "💾 数据备份与恢复",
+                "💾 数据备份和恢复",
                 [
-                    (
-                        "/newapi backup [或 /newapi 备份]",
-                        "打包导出用户绑定与配置为 ZIP 压缩包",
-                    ),
-                    (
-                        "/newapi restore [或 /newapi 恢复]",
-                        "从最新或指定备份压缩包一键复原",
-                    ),
+                    ("/newapi 备份", "导出绑定数据和配置文件"),
+                    ("/newapi 恢复 [文件名]", "从备份文件恢复数据"),
                 ],
             ),
         ]
 
+        client = self._refresh_client()
+        site_name = await self._get_site_name(client)
         try:
             img_path = DarkCardRenderer.render_menu(
-                title="👑 NewAPI 站点管理菜单",
-                subtitle="仅限管理员调用（支持中文指令与无空格格式）",
+                title=f"👑 {site_name} 管理菜单",
+                subtitle="仅供机器人管理员使用",
                 sections=sections,
-                footer_note="提示：兑换码生成与数据备份支持直接复制与文件下载。",
+                footer_note="提醒：创建、封禁、调额等操作会立即生效。",
             )
             if img_path and os.path.exists(img_path):
                 return event.image_result(img_path)
         except Exception as e:
             logger.warning(f"[NewAPI] 管理菜单暗色卡片渲染异常，降级为纯文本回复: {e}")
 
-        return event.plain_result(self._get_plain_admin_menu_text())
+        return event.plain_result(self._get_plain_admin_menu_text(site_name))
 
     async def bind_user(self, event: AstrMessageEvent, user_identifier: str = ""):
         """绑定个人的 NewAPI 用户 ID 或用户名"""
         user_identifier = user_identifier.strip()
         if not user_identifier:
             return event.plain_result(
-                "使用方式: /newapi bind <用户ID或用户名>\n例如: /newapi bind 10 或 /newapi bind alice"
+                "用法：/newapi 绑定 <用户编号或用户名>\n例如：/newapi 绑定 10"
             )
 
         client = self._refresh_client()
@@ -690,8 +718,8 @@ class NewApiPlugin(Star):
         self._save_binding(str(sender_id), user_id, uname or str(user_id))
         return event.plain_result(
             f"✅ 绑定成功！\n"
-            f"• 绑定账号: {uname} (ID: {user_id})\n"
-            f"• 提示: 您现在可发送 [/newapi my] 或 [/newapi 余额] 查询您的用量、余额与订阅信息。"
+            f"• 绑定账号：{uname}（编号：{user_id}）\n"
+            f"• 现在可发送 /newapi 个人 查询用量、余额与订阅信息。"
         )
 
     async def unbind_user(self, event: AstrMessageEvent):
@@ -713,33 +741,35 @@ class NewApiPlugin(Star):
 
         sender_id = str(event.get_sender_id())
         binding = self._get_binding(sender_id)
+        if not isinstance(binding, dict):
+            return event.plain_result(
+                "💡 你还没有绑定 NewAPI 账号。\n"
+                "请发送 /newapi 绑定 <用户编号或用户名>，绑定后即可查询余额、用量和订阅。"
+            )
 
-        target_user = None
-        subscriptions = []
-
-        if binding:
+        try:
             uid = int(binding.get("user_id"))
-            try:
-                target_user = await client.get_user(uid)
-            except Exception:
-                pass
-            try:
-                subscriptions = await client.get_user_subscriptions(uid)
-            except Exception:
-                pass
-        else:
-            # Not bound: if admin or token user
-            if self._is_admin(event):
-                try:
-                    target_user = await client.get_self()
-                    subscriptions = await client.get_self_subscriptions()
-                except Exception:
-                    pass
-            if not target_user:
-                return event.plain_result(
-                    "💡 您当前尚未绑定 NewAPI 账号。\n"
-                    "请发送 [/newapi bind <用户ID或用户名>] 绑定您的账号，即可随时查询余额、用量与订阅！"
-                )
+        except (TypeError, ValueError):
+            return event.plain_result(
+                "❌ 绑定记录无效，请先发送 /newapi 解绑，再重新绑定账号。"
+            )
+
+        try:
+            target_user = await client.get_user(uid)
+        except Exception as e:
+            logger.warning("[NewAPI] 查询绑定用户 %s 失败: %s", uid, e)
+            return event.plain_result(f"❌ 查询绑定账号失败：{e}")
+        if not isinstance(target_user, dict) or not target_user:
+            return event.plain_result(
+                "❌ 绑定的 NewAPI 账号不存在或当前访问令牌无权查询。\n"
+                "请检查用户编号和访问令牌权限后重新绑定。"
+            )
+
+        try:
+            subscriptions = await client.get_user_subscriptions(uid)
+        except Exception as e:
+            logger.warning("[NewAPI] 查询用户 %s 订阅失败: %s", uid, e)
+            subscriptions = None
 
         uname = target_user.get("username", "未知")
         dname = target_user.get("display_name", uname)
@@ -754,7 +784,9 @@ class NewApiPlugin(Star):
 
         # Parse subscriptions
         sub_desc = "暂无活跃订阅"
-        if subscriptions:
+        if subscriptions is None:
+            sub_desc = "暂不可获取"
+        elif subscriptions:
             sub_lines = []
             for s in subscriptions:
                 if isinstance(s, dict):
@@ -770,16 +802,14 @@ class NewApiPlugin(Star):
 
         msg = (
             f"👤 【NewAPI 账户与余额】\n"
-            f"• 用户名: {name_display}\n"
-            f"• 用户 ID: {uid}  |  状态: {status_str}\n"
-            f"• 所属分组: {group}\n"
-            f"• 剩余余额: {client.format_quota(quota)}\n"
-            f"• 累计消耗: {client.format_quota(used_quota)}\n"
-            f"• 请求次数: {req_count:,} 次\n"
-            f"• 订阅情况: {sub_desc}"
+            f"• 用户名：{name_display}\n"
+            f"• 用户编号：{uid}  |  状态：{status_str}\n"
+            f"• 所属分组：{group}\n"
+            f"• 剩余额度：{client.format_quota(int(quota or 0))}\n"
+            f"• 累计消费：{client.format_quota(int(used_quota or 0))}\n"
+            f"• 请求次数：{int(req_count or 0):,} 次\n"
+            f"• 订阅情况：{sub_desc}"
         )
-        if not binding:
-            msg += "\n──────────────────\n💡 提示: 发送 [/newapi bind <ID>] 可绑定专属用户。"
         return event.plain_result(msg)
 
     async def my_stat(self, event: AstrMessageEvent, period: str = "today"):
@@ -790,21 +820,40 @@ class NewApiPlugin(Star):
                 "❌ 尚未在插件设置中配置 NewAPI 站点地址或访问令牌。"
             )
 
+        binding = self._get_binding(str(event.get_sender_id()))
+        if not isinstance(binding, dict):
+            return event.plain_result(
+                "💡 你还没有绑定 NewAPI 账号。\n"
+                "请发送 /newapi 绑定 <用户编号或用户名>，再查询个人统计。"
+            )
+
+        username = str(binding.get("username") or "").strip()
+        if not username:
+            return event.plain_result(
+                "❌ 绑定记录缺少用户名，请先发送 /newapi 解绑，再重新绑定账号。"
+            )
+
         start_ts, end_ts, label = self._get_time_bounds(period)
         try:
-            stat = await client.get_self_stat(start_ts, end_ts)
+            stat = await client.get_site_stat(
+                start_ts, end_ts, username=username
+            )
         except Exception as e:
             return event.plain_result(f"❌ 查询个人消耗统计失败: {e}")
+
+        if not isinstance(stat, dict):
+            return event.plain_result("❌ NewAPI 未返回个人统计数据，请稍后重试。")
 
         consumed_quota = stat.get("quota", 0)
         rpm = stat.get("rpm", 0)
         tpm = stat.get("tpm", 0)
+        site_name = await self._get_site_name(client)
 
         msg = (
-            f"📈 【个人消费统计 - {label}】\n"
+            f"📈 【{site_name} 个人消费统计 - {label}】\n"
             f"• 消费金额: {client.format_quota(consumed_quota)}\n"
-            f"• 当前速率: {rpm:,} RPM (请求/分)\n"
-            f"• Token 速率: {tpm:,} TPM (Token/分)"
+            f"• 每分钟请求数：{rpm:,}\n"
+            f"• 每分钟词元数：{tpm:,}"
         )
         return event.plain_result(msg)
 
@@ -820,25 +869,21 @@ class NewApiPlugin(Star):
         try:
             stat = await client.get_site_stat(start_ts, end_ts)
         except Exception as e:
-            try:
-                stat = await client.get_self_stat(start_ts, end_ts)
-                return event.plain_result(
-                    f"⚠️ 当前令牌无全站统计权限，已为您显示个人统计 ({label}):\n"
-                    f"• 消耗金额: {client.format_quota(stat.get('quota', 0))}\n"
-                    f"• 当前速率: {stat.get('rpm', 0):,} RPM | {stat.get('tpm', 0):,} TPM"
-                )
-            except Exception:
-                return event.plain_result(f"❌ 查询全站统计失败: {e}")
+            return event.plain_result(f"❌ 查询全站统计失败: {e}")
+
+        if not isinstance(stat, dict):
+            return event.plain_result("❌ NewAPI 未返回全站统计数据，请稍后重试。")
 
         consumed_quota = stat.get("quota", 0)
         rpm = stat.get("rpm", 0)
         tpm = stat.get("tpm", 0)
+        site_name = await self._get_site_name(client)
 
         msg = (
-            f"🌐 【NewAPI 全站消耗统计 - {label}】\n"
+            f"🌐 【{site_name} 全站消费统计 - {label}】\n"
             f"• 全站消耗: {client.format_quota(consumed_quota)}\n"
-            f"• 请求速率: {rpm:,} RPM (请求/分)\n"
-            f"• Token 速率: {tpm:,} TPM (Token/分)"
+            f"• 每分钟请求数：{rpm:,}\n"
+            f"• 每分钟词元数：{tpm:,}"
         )
         return event.plain_result(msg)
 
@@ -854,9 +899,9 @@ class NewApiPlugin(Star):
         start_ts, end_ts, label = self._get_time_bounds(period_key)
 
         try:
-            formatted_rows: List[Tuple[int, str, str, str]] = []
+            formatted_rows: List[Tuple[int, str, str, str, int]] = []
 
-            if period_key in ["total", "all", "总", "全部", "历史"]:
+            if period_key in ["total", "all", "总", "总计", "全部", "历史"]:
                 users, _ = await client.get_all_users(p=0, size=100)
                 if not users:
                     return event.plain_result("📊 暂无用户消耗数据。")
@@ -880,11 +925,11 @@ class NewApiPlugin(Star):
                     name_display = (
                         f"{uname} ({dname})" if dname and dname != uname else uname
                     )
-                    used = u.get("used_quota", 0)
-                    req_cnt = u.get("request_count", 0)
-                    extra = f"{req_cnt:,}次请求" if req_cnt else ""
+                    used = int(u.get("used_quota") or 0)
+                    req_cnt = int(u.get("request_count") or 0)
+                    extra = f"{req_cnt:,} 次请求" if req_cnt else ""
                     formatted_rows.append(
-                        (i, name_display, client.format_quota(used), extra)
+                        (i, name_display, client.format_quota(used), extra, used)
                     )
 
             else:
@@ -917,22 +962,32 @@ class NewApiPlugin(Star):
 
                 for i, (uname, quota_val) in enumerate(top_users, 1):
                     tok_val = token_aggregated.get(uname, 0)
-                    extra = f"{tok_val:,} tokens" if tok_val else ""
+                    extra = f"{tok_val:,} 个词元" if tok_val else ""
                     formatted_rows.append(
-                        (i, uname, client.format_quota(quota_val), extra)
+                        (
+                            i,
+                            uname,
+                            client.format_quota(quota_val),
+                            extra,
+                            quota_val,
+                        )
                     )
 
+            site_name = urlsplit(client.base_url).hostname or "NewAPI"
             try:
-                img_path = DarkCardRenderer.render_user_rankings(label, formatted_rows)
+                site_name = await self._get_site_name(client)
+                img_path = DarkCardRenderer.render_user_rankings(
+                    label, formatted_rows, site_name=site_name
+                )
                 if img_path and os.path.exists(img_path):
                     return event.image_result(img_path)
             except Exception as e:
                 logger.warning(f"[NewAPI] 用户排行暗色卡片渲染异常，降级为纯文本回复: {e}")
 
-            lines = [f"📊 【用户消耗排行榜 Top 10 - {label}】"]
-            for rk, uname, q_str, extra in formatted_rows:
-                extra_str = f" ({extra})" if extra else ""
-                lines.append(f"#{rk} {uname}: {q_str}{extra_str}")
+            lines = [f"📊 【{site_name} 用户消费排行 前十 - {label}】"]
+            for rk, uname, q_str, extra, _quota in formatted_rows:
+                extra_str = f"（{extra}）" if extra else ""
+                lines.append(f"第 {rk} 名  {uname}：{q_str}{extra_str}")
             return event.plain_result("\n".join(lines))
 
         except Exception as e:
@@ -949,35 +1004,84 @@ class NewApiPlugin(Star):
         p_map = {
             "day": "today",
             "today": "today",
+            "今日": "today",
+            "今天": "today",
             "week": "week",
+            "周": "week",
+            "本周": "week",
             "month": "month",
+            "月": "month",
+            "本月": "month",
             "year": "year",
+            "年": "year",
+            "本年": "year",
         }
-        query_period = p_map.get(period.lower().strip(), "week")
+        period_key = str(period or "本周").lower().strip()
+        query_period = p_map.get(period_key, "week")
+        period_label = {
+            "today": "今日",
+            "week": "本周",
+            "month": "本月",
+            "year": "本年",
+        }[query_period]
 
         try:
             rankings = await client.get_rankings(query_period)
         except Exception as e:
             return event.plain_result(f"❌ 获取模型排行失败: {e}")
 
+        if not isinstance(rankings, dict):
+            return event.plain_result("❌ NewAPI 返回的排行数据格式不正确。")
         models = rankings.get("models", [])
         vendors = rankings.get("vendors", [])
+        models = models if isinstance(models, list) else []
+        vendors = vendors if isinstance(vendors, list) else []
 
         if not models and not vendors:
-            return event.plain_result(f"📊 该周期 ({query_period}) 暂无模型消耗数据。")
+            return event.plain_result(f"📊 {period_label} 暂无模型消费数据。")
 
+        site_name = urlsplit(client.base_url).hostname or "NewAPI"
         try:
-            img_path = DarkCardRenderer.render_model_rankings(query_period, models, vendors)
+            site_name = await self._get_site_name(client)
+            img_path = DarkCardRenderer.render_model_rankings(
+                period_label, models, vendors, site_name=site_name
+            )
             if img_path and os.path.exists(img_path):
                 return event.image_result(img_path)
         except Exception as e:
             logger.warning(f"[NewAPI] 模型排行暗色卡片渲染异常，降级为纯文本回复: {e}")
 
-        lines = [f"🤖 【热门模型消耗排行 - {query_period}】"]
+        lines = [f"🤖 【{site_name} 模型消费排行 - {period_label}】"]
+        models = [m for m in models if isinstance(m, dict)]
         for idx, m in enumerate(models[:10], 1):
             name = m.get("model_name", "未知")
-            tok = m.get("token_count", 0)
-            lines.append(f"• #{idx} {name}: {tok:,} Tokens")
+            tok = int(m.get("total_tokens") or 0)
+            share = m.get("share")
+            try:
+                share_ratio = float(share)
+                share_label = f"{share_ratio:.2%}" if 0 <= share_ratio <= 1 else "占比暂不可获取"
+            except (TypeError, ValueError):
+                share_label = "占比暂不可获取"
+            lines.append(f"第 {idx} 名  {name}：{tok:,} 个词元 · {share_label}")
+        if vendors:
+            lines.append("厂商词元占比：")
+            for vendor in vendors[:5]:
+                if not isinstance(vendor, dict):
+                    continue
+                vendor_name = str(vendor.get("vendor") or "其他")
+                vendor_tokens = int(vendor.get("total_tokens") or 0)
+                try:
+                    vendor_share = float(vendor.get("share"))
+                    vendor_share_label = (
+                        f"{vendor_share:.2%}"
+                        if 0 <= vendor_share <= 1
+                        else "占比暂不可获取"
+                    )
+                except (TypeError, ValueError):
+                    vendor_share_label = "占比暂不可获取"
+                lines.append(
+                    f"• {vendor_name}：{vendor_tokens:,} 个词元 · {vendor_share_label}"
+                )
         return event.plain_result("\n".join(lines))
 
     async def site_status(self, event: AstrMessageEvent):
@@ -988,11 +1092,17 @@ class NewApiPlugin(Star):
 
         try:
             status = await client.get_status()
-            if isinstance(status, dict) and "quota_per_unit" in status:
-                self._save_cache("quota_per_unit", status["quota_per_unit"])
-                self._save_cache("system_name", status.get("system_name", "NewAPI"))
         except Exception as e:
             return event.plain_result(f"❌ 获取站点状态失败: {e}")
+        if not isinstance(status, dict):
+            return event.plain_result("❌ NewAPI 返回的站点状态格式不正确，请稍后重试。")
+        if "quota_per_unit" in status:
+            self._save_cache("quota_per_unit", status["quota_per_unit"])
+        if status.get("system_name"):
+            self._site_name_cache = str(status["system_name"]).strip()
+            self._site_name_base_url = client.base_url
+            self._site_name_checked_at = time.monotonic()
+            self._save_cache("system_name", self._site_name_cache)
 
         # Only display values returned by NewAPI; unavailable values stay None.
         sys_metrics = {
@@ -1048,7 +1158,7 @@ class NewApiPlugin(Star):
         mem_sys = sys_metrics["mem_sys_bytes"]
         alloc_text = format_bytes(mem_alloc)
         sys_text = format_bytes(mem_sys)
-        memory_text = f"Alloc {alloc_text} / Sys {sys_text}"
+        memory_text = f"已分配 {alloc_text} / 进程持有 {sys_text}"
         disk_percent = sys_metrics["disk_percent"]
         disk_used = sys_metrics["disk_used_gb"]
         disk_total = sys_metrics["disk_total_gb"]
@@ -1066,16 +1176,16 @@ class NewApiPlugin(Star):
             f"🖥️ 【{s_name} 系统状态】\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• 站点版本: {ver}\n"
-            f"• CPU 占用: {cpu_text}\n"
-            f"• 进程内存: {memory_text}\n"
-            f"• 缓存所在盘: {disk_text}"
+            f"• 处理器使用率：{cpu_text}\n"
+            f"• 进程内存：{memory_text}\n"
+            f"• 缓存所在磁盘：{disk_text}"
         )
 
     async def redeem(self, event: AstrMessageEvent, cdk_key: str = ""):
         """使用兑换码为当前账号充值 (文本返回)"""
         cdk_key = cdk_key.strip()
         if not cdk_key:
-            return event.plain_result("使用方式: /newapi redeem <兑换码CDK>")
+            return event.plain_result("用法：/newapi 兑换 <兑换码>")
 
         client = self._refresh_client()
         if not client.is_configured():
@@ -1101,7 +1211,7 @@ class NewApiPlugin(Star):
             return event.plain_result(err)
 
         if not username_or_id:
-            return event.plain_result("使用方式: /newapi user <用户名或用户ID>")
+            return event.plain_result("用法：/newapi 查用户 <用户名或用户编号>")
 
         client = self._refresh_client()
         user_id, resolved_name = await self._resolve_user_id(username_or_id)
@@ -1161,7 +1271,7 @@ class NewApiPlugin(Star):
 
         if not username or not password:
             return event.plain_result(
-                "使用方式: /newapi create_user <用户名> <密码> [昵称]"
+                "用法：/newapi 创建用户 <用户名> <密码> [昵称]"
             )
 
         client = self._refresh_client()
@@ -1238,7 +1348,7 @@ class NewApiPlugin(Star):
 
         if not user_identifier or quota_usd <= 0:
             return event.plain_result(
-                "使用方式: /newapi add_quota <用户ID/用户名> <增加美元金额>"
+                "用法：/newapi 加额度 <用户编号或用户名> <美元金额>"
             )
 
         client = self._refresh_client()
@@ -1270,7 +1380,7 @@ class NewApiPlugin(Star):
 
         if not user_identifier or quota_usd <= 0:
             return event.plain_result(
-                "使用方式: /newapi sub_quota <用户ID/用户名> <扣减美元金额>"
+                "用法：/newapi 扣额度 <用户编号或用户名> <美元金额>"
             )
 
         client = self._refresh_client()
@@ -1302,7 +1412,7 @@ class NewApiPlugin(Star):
 
         if not user_identifier or quota_usd < 0:
             return event.plain_result(
-                "使用方式: /newapi set_quota <用户ID/用户名> <重置美元金额>"
+                "用法：/newapi 设额度 <用户编号或用户名> <美元金额>"
             )
 
         client = self._refresh_client()
@@ -1328,7 +1438,7 @@ class NewApiPlugin(Star):
             return event.plain_result(err)
 
         if not user_identifier:
-            return event.plain_result("使用方式: /newapi enable_user <用户ID/用户名>")
+            return event.plain_result("用法：/newapi 解封 <用户编号或用户名>")
 
         client = self._refresh_client()
         user_id, uname = await self._resolve_user_id(user_identifier)
@@ -1352,7 +1462,7 @@ class NewApiPlugin(Star):
             return event.plain_result(err)
 
         if not user_identifier:
-            return event.plain_result("使用方式: /newapi disable_user <用户ID/用户名>")
+            return event.plain_result("用法：/newapi 封号 <用户编号或用户名>")
 
         client = self._refresh_client()
         user_id, uname = await self._resolve_user_id(user_identifier)
@@ -1380,7 +1490,10 @@ class NewApiPlugin(Star):
                 return event.plain_result("📡 暂无已配置的上游渠道。")
 
             try:
-                img_path = DarkCardRenderer.render_channels(channels, total)
+                site_name = await self._get_site_name(client)
+                img_path = DarkCardRenderer.render_channels(
+                    channels, total, site_name=site_name
+                )
                 if img_path and os.path.exists(img_path):
                     return event.image_result(img_path)
             except Exception as e:
@@ -1421,6 +1534,10 @@ class NewApiPlugin(Star):
 
     async def list_tokens_cmd(self, event: AstrMessageEvent):
         """查看当前账号的 API Key 列表 (文本返回)"""
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
+
         client = self._refresh_client()
         if not client.is_configured():
             return event.plain_result(
@@ -1430,9 +1547,9 @@ class NewApiPlugin(Star):
         try:
             tokens, total = await client.list_tokens(p=0, size=15)
             if not tokens:
-                return event.plain_result("🔑 暂无已创建的 API Key。")
+                return event.plain_result("🔑 暂无已创建的访问令牌。")
 
-            lines = [f"🔑 【API Key 列表 (共 {total} 个)】"]
+            lines = [f"🔑 【访问令牌列表（共 {total} 个）】"]
             for t in tokens:
                 tid = t.get("id", "-")
                 tname = t.get("name", "未命名")
@@ -1448,7 +1565,7 @@ class NewApiPlugin(Star):
                     f"• ID:{tid} | {tname} [{status}]\n  剩余: {remain} | 已用: {used}"
                 )
 
-            lines.append("\n💡 输入 [/newapi token_key <ID>] 可查看完整秘钥。")
+            lines.append("\n💡 发送 /newapi 查看秘钥 <编号> 可查看完整密钥。")
             return event.plain_result("\n".join(lines))
         except Exception as e:
             return event.plain_result(f"❌ 获取令牌列表失败: {e}")
@@ -1460,9 +1577,12 @@ class NewApiPlugin(Star):
         quota_usd: float = 0.0,
     ):
         """创建新的 API Key (文本返回)"""
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
         if not name:
             return event.plain_result(
-                "使用方式: /newapi token_add <名称> [额度美元(留空为无限)]"
+                "用法：/newapi 创建令牌 <名称> [额度美元；留空为无限额度]"
             )
 
         client = self._refresh_client()
@@ -1485,23 +1605,26 @@ class NewApiPlugin(Star):
             )
 
             msg = (
-                f"✅ API Key 创建成功！\n"
-                f"• 令牌 ID: {tid}\n"
-                f"• 令牌名称: {name}\n"
-                f"• 初始额度: {quota_desc}\n"
+                f"✅ 访问令牌创建成功！\n"
+                f"• 令牌编号：{tid}\n"
+                f"• 令牌名称：{name}\n"
+                f"• 初始额度：{quota_desc}\n"
             )
             if key:
                 msg += f"• 秘钥 Key: {key}\n"
             else:
-                msg += f"• 提示: 请使用 [/newapi token_key {tid}] 获取完整秘钥。"
+                msg += f"• 请发送 /newapi 查看秘钥 {tid} 获取完整密钥。"
             return event.plain_result(msg)
         except Exception as e:
-            return event.plain_result(f"❌ 创建 API Key 失败: {e}")
+            return event.plain_result(f"❌ 创建访问令牌失败：{e}")
 
     async def del_token_cmd(self, event: AstrMessageEvent, token_id: int = 0):
         """删除指定 API Key (文本返回)"""
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
         if token_id <= 0:
-            return event.plain_result("使用方式: /newapi token_del <令牌ID>")
+            return event.plain_result("用法：/newapi 删除令牌 <令牌编号>")
 
         client = self._refresh_client()
         if not client.is_configured():
@@ -1513,12 +1636,15 @@ class NewApiPlugin(Star):
             await client.delete_token(token_id)
             return event.plain_result(f"🗑️ 成功删除令牌 ID: {token_id}！")
         except Exception as e:
-            return event.plain_result(f"❌ 删除 API Key 失败: {e}")
+            return event.plain_result(f"❌ 删除访问令牌失败：{e}")
 
     async def get_token_key_cmd(self, event: AstrMessageEvent, token_id: int = 0):
         """获取完整的 API Key 秘钥 (sk-...) (文本返回)"""
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
         if token_id <= 0:
-            return event.plain_result("使用方式: /newapi token_key <令牌ID>")
+            return event.plain_result("用法：/newapi 查看秘钥 <令牌编号>")
 
         client = self._refresh_client()
         if not client.is_configured():

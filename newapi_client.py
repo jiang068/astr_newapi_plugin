@@ -44,7 +44,7 @@ class NewAPIClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if self.user_id:
-            headers["New-Api-User"] = self.user_id
+            headers["New-Api-User"] = str(self.user_id)
         return headers
 
     def _create_client(self) -> httpx.AsyncClient:
@@ -170,17 +170,14 @@ class NewAPIClient:
 
     async def get_user_subscriptions(self, user_id: int) -> List[Dict[str, Any]]:
         """GET /api/subscription/admin/users/:id/subscriptions - Query user subscriptions (Admin)."""
-        try:
-            res = await self._request(
-                "GET", f"/api/subscription/admin/users/{user_id}/subscriptions"
-            )
-            data = res.get("data", [])
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get("items", []) or data.get("subscriptions", [])
-        except Exception:
-            pass
+        res = await self._request(
+            "GET", f"/api/subscription/admin/users/{user_id}/subscriptions"
+        )
+        data = res.get("data", [])
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("items", []) or data.get("subscriptions", [])
         return []
 
     async def get_self_stat(
