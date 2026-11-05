@@ -1,0 +1,46 @@
+{
+    "site_url": {
+        "description": "NewAPI 站点地址",
+        "type": "string",
+        "hint": "NewAPI 站点 Base URL，例如 https://api.yourdomain.com 或 http://127.0.0.1:3000",
+        "default": "",
+        "obvious_hint": true
+    },
+    "api_token": {
+        "description": "访问令牌 (API Token)",
+        "type": "string",
+        "hint": "填入 NewAPI 管理员或用户的访问令牌 (PAT / nap_... 或 系统令牌)。用于身份认证和调用接口",
+        "default": "",
+        "obvious_hint": true
+    },
+    "enable_admin": {
+        "description": "开启管理功能",
+        "type": "bool",
+        "hint": "是否开启管理功能（创建用户、生成兑换码、调整额度、封禁用户、渠道管理等）。关闭后仅提供查询功能",
+        "default": true
+    },
+    "admin_only": {
+        "description": "管理命令仅限机器人管理员",
+        "type": "bool",
+        "hint": "开启后，管理类命令仅限 AstrBot 管理员执行，普通用户只能执行查询命令",
+        "default": true
+    },
+    "request_timeout": {
+        "description": "请求超时时间 (秒)",
+        "type": "int",
+        "hint": "与 NewAPI 站点通信的超时时间（秒）",
+        "default": 15
+    },
+    "proxy": {
+        "description": "HTTP 代理",
+        "type": "string",
+        "hint": "可选。例如 http://127.0.0.1:7890，留空则直连",
+        "default": ""
+    },
+    "quota_per_unit": {
+        "description": "额度换算比例 ($1 等于多少点)",
+        "type": "int",
+        "hint": "NewAPI 默认 500000 即 50 万点 = $1 美元。插件会自动尝试从站点同步，此处作为回退默认值",
+        "default": 500000
+    }
+}
