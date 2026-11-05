@@ -12,79 +12,66 @@ _FONT_PATH: Optional[str] = None
 
 def _find_system_font() -> Optional[str]:
     global _FONT_PATH
+
     if _FONT_PATH is not None:
         return _FONT_PATH
 
     candidates = [
+        # Linux：优先使用 Noto CJK
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+
         # Windows
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msyh.ttf",
-        "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/simsun.ttc",
-        # Linux: 优先使用 Noto Sans CJK
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        # macOS
-        "/System/Library/Fonts/PingFang.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
     ]
-    for p in candidates:
-        if os.path.exists(p):
-            _FONT_PATH = p
-            return p
 
-    # Dynamic search in Linux font directories
-    linux_font_dirs = [
-        "/usr/share/fonts",
-        "/usr/local/share/fonts",
-        os.path.expanduser("~/.fonts"),
-    ]
-    for fdir in linux_font_dirs:
-        if os.path.isdir(fdir):
-            for root, _, files in os.walk(fdir):
-                for file in files:
-                    lower = file.lower()
-                    if lower.endswith((".ttc", ".ttf", ".otf")) and any(
-                        k in lower
-                        for k in ["wqy", "noto", "cjk", "hei", "song", "kai", "sans"]
-                    ):
-                        full_p = os.path.join(root, file)
-                        _FONT_PATH = full_p
-                        return full_p
+    for path in candidates:
+        if os.path.isfile(path):
+            _FONT_PATH = path
+            print(f"[NewAPI Renderer] Selected font: {path}")
+            return path
 
     _FONT_PATH = ""
+    print("[NewAPI Renderer] ERROR: No CJK font found")
     return None
 
 
-def _get_font(size: int = 15) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _get_font(size: int = 15):
     if size in _FONT_CACHE:
         return _FONT_CACHE[size]
 
-        font_path = _find_system_font()
+    font_path = _find_system_font()
 
-        if font_path:
-            try:
-                f = ImageFont.truetype(font_path, size)
-                print(
-                    f"[NewAPI Renderer] Font loaded: "
-                    f"{font_path}, size={size}, name={f.getname()}"
+    if font_path:
+        try:
+            # Noto CJK TTC 字体集合：
+            # index=2 对应简体中文 SC
+            if "NotoSansCJK-Regular.ttc" in font_path:
+                font = ImageFont.truetype(
+                    font_path,
+                    size,
+                    index=2
                 )
-                _FONT_CACHE[size] = f
-                return f
-            except Exception as e:
-                print(
-                    f"[NewAPI Renderer] Font loading failed: "
-                    f"{font_path}, error={e}"
-                )
+            else:
+                font = ImageFont.truetype(font_path, size)
 
-        print("[NewAPI Renderer] WARNING: Using Pillow default font")
-        return ImageFont.load_default()
+            print(
+                f"[NewAPI Renderer] Loaded: "
+                f"{font.getname()}, size={size}"
+            )
 
-    default_f = ImageFont.load_default()
-    return default_f
+            _FONT_CACHE[size] = font
+            return font
+
+        except Exception as e:
+            print(f"[NewAPI Renderer] Font error: {e}")
+
+    raise RuntimeError(
+        "No usable Chinese font available for NewAPI renderer"
+    )
 
 
 def _get_temp_path() -> str:
