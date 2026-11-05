@@ -487,8 +487,8 @@ class NewApiPlugin(Star):
     # Master Command & Standalone Registrations
     # ==========================================
 
-    @command("newapi", alias={"newapi_help", "newapi_menu", "newapimenu", "newapi菜单", "newapi帮助"})
-    async def newapi_main(self, event: AstrMessageEvent, input: GreedyStr = GreedyStr("")):
+    @command("newapi", alias={"newapi_help", "newapimenu", "newapi帮助"})
+    async def newapi_main(self, event: AstrMessageEvent, input: GreedyStr):
         """NewAPI 站点信息查询与全能管理主入口指令"""
         content = str(input or "").strip()
         if not content:
