@@ -21,17 +21,12 @@ def _find_system_font() -> Optional[str]:
         "C:/Windows/Fonts/msyh.ttf",
         "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/simsun.ttc",
-        # Linux (Ubuntu, Debian, CentOS)
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+        # Linux: 优先使用 Noto Sans CJK
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/cjkuni-uming/uming.ttc",
         # macOS
         "/System/Library/Fonts/PingFang.ttc",
         "/Library/Fonts/Arial Unicode.ttf",
@@ -68,14 +63,25 @@ def _get_font(size: int = 15) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     if size in _FONT_CACHE:
         return _FONT_CACHE[size]
 
-    font_path = _find_system_font()
-    if font_path:
-        try:
-            f = ImageFont.truetype(font_path, size)
-            _FONT_CACHE[size] = f
-            return f
-        except Exception:
-            pass
+        font_path = _find_system_font()
+
+        if font_path:
+            try:
+                f = ImageFont.truetype(font_path, size)
+                print(
+                    f"[NewAPI Renderer] Font loaded: "
+                    f"{font_path}, size={size}, name={f.getname()}"
+                )
+                _FONT_CACHE[size] = f
+                return f
+            except Exception as e:
+                print(
+                    f"[NewAPI Renderer] Font loading failed: "
+                    f"{font_path}, error={e}"
+                )
+
+        print("[NewAPI Renderer] WARNING: Using Pillow default font")
+        return ImageFont.load_default()
 
     default_f = ImageFont.load_default()
     return default_f
