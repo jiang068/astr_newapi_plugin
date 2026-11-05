@@ -10,7 +10,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.all import *
+from astrbot.api.event import AstrMessageEvent, MessageChain, MessageEventResult
+from astrbot.api.event.filter import (
+    EventMessageType,
+    PermissionType,
+    command,
+    event_message_type,
+    permission_type,
+    regex,
+)
+from astrbot.api.message_components import Image, Plain
+from astrbot.core.star.filter.command import GreedyStr
 from astrbot.api.star import Context, Star, register
 
 try:
@@ -311,20 +322,72 @@ class NewApiPlugin(Star):
             pass
         return False
 
-    def _check_admin_permission(self, event: AstrMessageEvent) -> bool:
+    def _check_admin_permission(self, event: AstrMessageEvent) -> Optional[str]:
         """
-        Validate admin permissions.
-        If management features are disabled or user lacks permission,
-        silently stops the event and returns False.
+        验证管理员权限。
+        通过时返回 None；不通过时返回友好的中文提示字符串。
+        严禁调用 event.stop_event()，确保用户知晓原因并能正常收到回复。
         """
         if not self._is_admin_enabled():
-            event.stop_event()
-            return False
+            return "❌ 管理功能已被管理员在配置中禁用 (enable_admin=false)。"
         admin_only = bool(self.config.get("admin_only", True))
         if admin_only and not self._is_admin(event):
-            event.stop_event()
-            return False
-        return True
+            sender_id = event.get_sender_id()
+            return (
+                f"❌ 权限不足：该指令仅限机器人管理员使用。\n"
+                f"• 当前用户 ID: {sender_id}\n"
+                f"• 提示：管理员可在后台配置或通过 /op {sender_id} 赋予管理员权限。"
+            )
+        return None
+
+    def _get_plain_menu_text(self, is_adm: bool) -> str:
+        admin_status = "开启" if self._is_admin_enabled() else "关闭"
+        lines = [
+            "📋 【NewAPI 站点服务菜单】",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 个人与查询指令：",
+            "• /newapi my (或 /newapi 余额) - 查询用量/余额/订阅",
+            "• /newapi bind <ID/用户名> - 绑定个人账号",
+            "• /newapi unbind - 解绑个人账号",
+            "• /newapi my_stat [today/week/month/all] - 个人消费统计",
+            "• /newapi stat [today/week/month/all] - 全站消耗与速率",
+            "• /newapi ranking [day/week/month/total] - 用户消耗排行榜",
+            "• /newapi model_ranking [today/week/month] - 模型调用排行",
+            "• /newapi status - 站点与服务器 CPU/内存状态",
+            "• /newapi redeem <兑换码> - 充值卡 CDK 兑换",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"👑 管理功能状态: {admin_status}",
+        ]
+        if self._is_admin_enabled() and is_adm:
+            lines.append("💡 管理员可输入 [/newapi admin] 查看完整管理菜单")
+        return "\n".join(lines)
+
+    def _get_plain_admin_menu_text(self) -> str:
+        return "\n".join([
+            "👑 【NewAPI 站点管理菜单】",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "👤 用户与额度管理：",
+            "• /newapi user <ID/用户名> - 查用户详细状态与余额",
+            "• /newapi create_user <账号> <密码> [昵称] - 创建普通用户",
+            "• /newapi add_quota <用户> <美元> - 充值增加额度",
+            "• /newapi sub_quota <用户> <美元> - 扣减指定额度",
+            "• /newapi set_quota <用户> <美元> - 直接设置额度",
+            "• /newapi enable_user <用户> - 解禁/启用账号",
+            "• /newapi disable_user <用户> - 封禁/禁用账号",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "🎟️ 兑换码与渠道：",
+            "• /newapi create_cdk <面额> [数量] [名称] - 批量生成兑换码",
+            "• /newapi channels - 查看上游渠道配置与延迟",
+            "• /newapi test_channel [渠道ID] - 测试渠道网络速度",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "🔑 令牌与数据安全：",
+            "• /newapi token_list - 查看 API Key 列表",
+            "• /newapi token_add <名称> [额度] - 创建新的 API Key",
+            "• /newapi token_del <令牌ID> - 删除指定的 API Key",
+            "• /newapi token_key <令牌ID> - 查看完整秘钥 (sk-...)",
+            "• /newapi backup - 打包导出用户绑定与配置为 ZIP",
+            "• /newapi restore [文件名] - 一键复原配置数据",
+        ])
 
     # --- Helper Utilities ---
 
@@ -421,20 +484,106 @@ class NewApiPlugin(Star):
             }
 
     # ==========================================
-    # Command Group Declaration
+    # Master Command & Standalone Registrations
     # ==========================================
 
-    @filter.command_group("newapi")
-    def newapi(self):
-        """NewAPI 站点信息查询与管理"""
+    @command("newapi", alias={"newapi_help", "newapi_menu", "newapimenu", "newapi菜单", "newapi帮助"})
+    async def newapi_main(self, event: AstrMessageEvent, input: GreedyStr = GreedyStr("")):
+        """NewAPI 站点信息查询与全能管理主入口指令"""
+        content = str(input or "").strip()
+        if not content:
+            return await self.menu(event)
+
+        parts = content.split(maxsplit=1)
+        sub_cmd = parts[0].lower()
+        raw_args = parts[1] if len(parts) > 1 else ""
+
+        target = CMD_MAPPING.get(sub_cmd)
+        if not target:
+            for k, v in CMD_MAPPING.items():
+                if sub_cmd == k:
+                    target = v
+                    break
+
+        if not target:
+            return await self.menu(event)
+
+        return await self._dispatch_target(event, target, raw_args)
+
+    @command("newapi_menu", alias={"newapi菜单"})
+    async def cmd_menu(self, event: AstrMessageEvent):
+        """显示 NewAPI 普通查询功能菜单"""
+        return await self.menu(event)
+
+    @command("newapi_my", alias={"newapi余额", "newapi我的", "newapi个人"})
+    async def cmd_my(self, event: AstrMessageEvent):
+        """查询个人绑定的 NewAPI 账户、用量、余额与订阅"""
+        return await self.my_info(event)
+
+    @command("newapi_bind", alias={"newapi绑定"})
+    async def cmd_bind(self, event: AstrMessageEvent, user_identifier: str = ""):
+        """绑定个人的 NewAPI 用户 ID 或用户名"""
+        return await self.bind_user(event, user_identifier)
+
+    @command("newapi_unbind", alias={"newapi解绑"})
+    async def cmd_unbind(self, event: AstrMessageEvent):
+        """解绑个人的 NewAPI 账号"""
+        return await self.unbind_user(event)
+
+    @command("newapi_stat", alias={"newapi统计", "newapi全站统计"})
+    async def cmd_stat(self, event: AstrMessageEvent, period: str = "today"):
+        """查询 NewAPI 全站消耗统计 [today/week/month/all]"""
+        return await self.site_stat(event, period)
+
+    @command("newapi_mystat", alias={"newapi个人统计"})
+    async def cmd_mystat(self, event: AstrMessageEvent, period: str = "today"):
+        """查询个人在指定周期内的消费统计 [today/week/month/all]"""
+        return await self.my_stat(event, period)
+
+    @command("newapi_ranking", alias={"newapi排行", "newapi排行榜"})
+    async def cmd_ranking(self, event: AstrMessageEvent, period: str = "day"):
+        """查询用户消耗排行榜 [day/week/month/total]"""
+        return await self.user_ranking(event, period)
+
+    @command("newapi_model_ranking", alias={"newapi模型排行"})
+    async def cmd_model_ranking(self, event: AstrMessageEvent, period: str = "week"):
+        """查询模型与厂商 Token 消耗排行 [today/week/month/year]"""
+        return await self.model_ranking(event, period)
+
+    @command("newapi_status", alias={"newapi状态", "newapi运行状态"})
+    async def cmd_status(self, event: AstrMessageEvent):
+        """查询 NewAPI 站点配置与服务器 CPU/内存/磁盘运行状态"""
+        return await self.site_status(event)
+
+    @command("newapi_redeem", alias={"newapi充值", "newapi兑换"})
+    async def cmd_redeem(self, event: AstrMessageEvent, cdk_key: str = ""):
+        """使用兑换码为当前账号充值"""
+        return await self.redeem(event, cdk_key)
+
+    @command("newapi_admin", alias={"newapi管理", "newapi管理菜单"})
+    @permission_type(PermissionType.ADMIN)
+    async def cmd_admin(self, event: AstrMessageEvent):
+        """显示 NewAPI 管理员专用菜单"""
+        return await self.admin_menu(event)
+
+    @command("newapi_backup", alias={"newapi备份", "newapi导出"})
+    @permission_type(PermissionType.ADMIN)
+    async def cmd_backup(self, event: AstrMessageEvent):
+        """管理员打包备份所有用户绑定与配置数据并导出"""
+        return await self.backup_data_cmd(event)
+
+    @command("newapi_restore", alias={"newapi恢复", "newapi还原"})
+    @permission_type(PermissionType.ADMIN)
+    async def cmd_restore(self, event: AstrMessageEvent, filename: str = ""):
+        """管理员从备份压缩包解包复原数据"""
+        return await self.restore_data_cmd(event, filename)
 
     # ==========================================
     # User / Query Commands
     # ==========================================
 
-    @newapi.command("menu", alias={"help", "菜单", "帮助", "功能"})
     async def menu(self, event: AstrMessageEvent):
-        """显示 NewAPI 普通查询功能菜单 (PIL暗色图)"""
+        """显示 NewAPI 普通查询功能菜单 (PIL暗色图或纯文本)"""
         admin_status = "开启" if self._is_admin_enabled() else "关闭"
         is_adm = self._is_admin(event)
 
@@ -462,19 +611,25 @@ class NewApiPlugin(Star):
         if self._is_admin_enabled() and is_adm:
             footer += "  |  管理员可输入 [/newapi admin] 查看管理菜单"
 
-        img_path = DarkCardRenderer.render_menu(
-            title="NewAPI 站点服务菜单",
-            subtitle="输入指令即可触发对应功能（支持中文与无空格缩写）",
-            sections=sections,
-            footer_note=footer,
-        )
-        return event.image_result(img_path)
+        try:
+            img_path = DarkCardRenderer.render_menu(
+                title="NewAPI 站点服务菜单",
+                subtitle="输入指令即可触发对应功能（支持中文与无空格缩写）",
+                sections=sections,
+                footer_note=footer,
+            )
+            if img_path and os.path.exists(img_path):
+                return event.image_result(img_path)
+        except Exception as e:
+            logger.warning(f"[NewAPI] 暗色卡片菜单渲染异常，降级为纯文本回复: {e}")
 
-    @newapi.command("admin", alias={"admin_menu", "管理", "管理菜单"})
+        return event.plain_result(self._get_plain_menu_text(is_adm))
+
     async def admin_menu(self, event: AstrMessageEvent):
-        """显示 NewAPI 管理员专用菜单 (PIL暗色图)"""
-        if not self._check_admin_permission(event):
-            return
+        """显示 NewAPI 管理员专用菜单 (PIL暗色图或纯文本)"""
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         sections = [
             (
@@ -527,15 +682,20 @@ class NewApiPlugin(Star):
             ),
         ]
 
-        img_path = DarkCardRenderer.render_menu(
-            title="👑 NewAPI 站点管理菜单",
-            subtitle="仅限管理员调用（支持中文指令与无空格格式）",
-            sections=sections,
-            footer_note="提示：兑换码生成与数据备份支持直接复制与文件下载。",
-        )
-        return event.image_result(img_path)
+        try:
+            img_path = DarkCardRenderer.render_menu(
+                title="👑 NewAPI 站点管理菜单",
+                subtitle="仅限管理员调用（支持中文指令与无空格格式）",
+                sections=sections,
+                footer_note="提示：兑换码生成与数据备份支持直接复制与文件下载。",
+            )
+            if img_path and os.path.exists(img_path):
+                return event.image_result(img_path)
+        except Exception as e:
+            logger.warning(f"[NewAPI] 管理菜单暗色卡片渲染异常，降级为纯文本回复: {e}")
 
-    @newapi.command("bind", alias={"绑定"})
+        return event.plain_result(self._get_plain_admin_menu_text())
+
     async def bind_user(self, event: AstrMessageEvent, user_identifier: str = ""):
         """绑定个人的 NewAPI 用户 ID 或用户名"""
         user_identifier = user_identifier.strip()
@@ -564,7 +724,6 @@ class NewApiPlugin(Star):
             f"• 提示: 您现在可发送 [/newapi my] 或 [/newapi 余额] 查询您的用量、余额与订阅信息。"
         )
 
-    @newapi.command("unbind", alias={"解绑", "取消绑定"})
     async def unbind_user(self, event: AstrMessageEvent):
         """解绑个人的 NewAPI 账号"""
         sender_id = event.get_sender_id()
@@ -574,10 +733,6 @@ class NewApiPlugin(Star):
         else:
             return event.plain_result("💡 您当前尚未绑定任何 NewAPI 账号。")
 
-    @newapi.command(
-        "my",
-        alias={"me", "self", "个人", "个人信息", "我的", "余额", "用量", "订阅"},
-    )
     async def my_info(self, event: AstrMessageEvent):
         """查询个人绑定的 NewAPI 账户、用量、余额与订阅情况 (文本返回)"""
         client = self._refresh_client()
@@ -657,7 +812,6 @@ class NewApiPlugin(Star):
             msg += "\n──────────────────\n💡 提示: 发送 [/newapi bind <ID>] 可绑定专属用户。"
         return event.plain_result(msg)
 
-    @newapi.command("my_stat", alias={"mystat", "个人统计", "我的消耗"})
     async def my_stat(self, event: AstrMessageEvent, period: str = "today"):
         """查询个人在指定周期内的消费统计 [today/week/month/all] (文本返回)"""
         client = self._refresh_client()
@@ -684,7 +838,6 @@ class NewApiPlugin(Star):
         )
         return event.plain_result(msg)
 
-    @newapi.command("stat", alias={"site_stat", "全站统计", "统计", "全站消耗"})
     async def site_stat(self, event: AstrMessageEvent, period: str = "today"):
         """查询 NewAPI 全站消耗统计 [today/week/month/all] (文本返回)"""
         client = self._refresh_client()
@@ -719,9 +872,8 @@ class NewApiPlugin(Star):
         )
         return event.plain_result(msg)
 
-    @newapi.command("ranking", alias={"rank", "排行", "排行榜", "消耗排行"})
     async def user_ranking(self, event: AstrMessageEvent, period: str = "day"):
-        """查询用户消耗排行榜 [day/week/month/total] (PIL暗色图)"""
+        """查询用户消耗排行榜 [day/week/month/total] (PIL暗色图或纯文本)"""
         client = self._refresh_client()
         if not client.is_configured():
             return event.plain_result(
@@ -800,15 +952,24 @@ class NewApiPlugin(Star):
                         (i, uname, client.format_quota(quota_val), extra)
                     )
 
-            img_path = DarkCardRenderer.render_user_rankings(label, formatted_rows)
-            return event.image_result(img_path)
+            try:
+                img_path = DarkCardRenderer.render_user_rankings(label, formatted_rows)
+                if img_path and os.path.exists(img_path):
+                    return event.image_result(img_path)
+            except Exception as e:
+                logger.warning(f"[NewAPI] 用户排行暗色卡片渲染异常，降级为纯文本回复: {e}")
+
+            lines = [f"📊 【用户消耗排行榜 Top 10 - {label}】"]
+            for rk, uname, q_str, extra in formatted_rows:
+                extra_str = f" ({extra})" if extra else ""
+                lines.append(f"#{rk} {uname}: {q_str}{extra_str}")
+            return event.plain_result("\n".join(lines))
 
         except Exception as e:
             return event.plain_result(f"❌ 获取排行榜失败: {e}")
 
-    @newapi.command("model_ranking", alias={"models_ranking", "模型排行", "模型消耗"})
     async def model_ranking(self, event: AstrMessageEvent, period: str = "week"):
-        """查询模型与厂商 Token 消耗排行 [today/week/month/year] (PIL暗色图)"""
+        """查询模型与厂商 Token 消耗排行 [today/week/month/year] (PIL暗色图或纯文本)"""
         client = self._refresh_client()
         if not client.is_configured():
             return event.plain_result(
@@ -835,12 +996,22 @@ class NewApiPlugin(Star):
         if not models and not vendors:
             return event.plain_result(f"📊 该周期 ({query_period}) 暂无模型消耗数据。")
 
-        img_path = DarkCardRenderer.render_model_rankings(query_period, models, vendors)
-        return event.image_result(img_path)
+        try:
+            img_path = DarkCardRenderer.render_model_rankings(query_period, models, vendors)
+            if img_path and os.path.exists(img_path):
+                return event.image_result(img_path)
+        except Exception as e:
+            logger.warning(f"[NewAPI] 模型排行暗色卡片渲染异常，降级为纯文本回复: {e}")
 
-    @newapi.command("status", alias={"site_status", "状态", "系统状态", "运行状态"})
+        lines = [f"🤖 【热门模型消耗排行 - {query_period}】"]
+        for idx, m in enumerate(models[:10], 1):
+            name = m.get("model_name", "未知")
+            tok = m.get("token_count", 0)
+            lines.append(f"• #{idx} {name}: {tok:,} Tokens")
+        return event.plain_result("\n".join(lines))
+
     async def site_status(self, event: AstrMessageEvent):
-        """查询 NewAPI 站点配置与服务器 CPU/内存/磁盘运行状态 (PIL暗色图)"""
+        """查询 NewAPI 站点配置与服务器 CPU/内存/磁盘运行状态 (PIL暗色图或纯文本)"""
         client = self._refresh_client()
         if not client.base_url:
             return event.plain_result("❌ 尚未在插件设置中配置 NewAPI 站点地址。")
@@ -869,10 +1040,24 @@ class NewApiPlugin(Star):
                     disk_info.get("used_percent", 0.0), 1
                 )
 
-        img_path = DarkCardRenderer.render_status(status, sys_metrics)
-        return event.image_result(img_path)
+        try:
+            img_path = DarkCardRenderer.render_status(status, sys_metrics)
+            if img_path and os.path.exists(img_path):
+                return event.image_result(img_path)
+        except Exception as e:
+            logger.warning(f"[NewAPI] 状态暗色卡片渲染异常，降级为纯文本回复: {e}")
 
-    @newapi.command("redeem", alias={"topup", "兑换", "充值"})
+        s_name = status.get("system_name", "NewAPI 站点")
+        ver = status.get("version", "未知")
+        return event.plain_result(
+            f"🖥️ 【{s_name} 系统状态】\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• 站点版本: {ver}\n"
+            f"• CPU 占用: {sys_metrics.get('cpu_percent', 0.0)}%\n"
+            f"• 内存占用: {sys_metrics.get('mem_percent', 0.0)}% ({sys_metrics.get('mem_used_gb', 0.0)}GB / {sys_metrics.get('mem_total_gb', 0.0)}GB)\n"
+            f"• 磁盘占用: {sys_metrics.get('disk_percent', 0.0)}% ({sys_metrics.get('disk_used_gb', 0.0)}GB / {sys_metrics.get('disk_total_gb', 0.0)}GB)"
+        )
+
     async def redeem(self, event: AstrMessageEvent, cdk_key: str = ""):
         """使用兑换码为当前账号充值 (文本返回)"""
         cdk_key = cdk_key.strip()
@@ -896,11 +1081,11 @@ class NewApiPlugin(Star):
     # Admin / Management Commands
     # ==========================================
 
-    @newapi.command("user", alias={"user_info", "查用户", "用户详情", "用户信息"})
     async def get_user_info(self, event: AstrMessageEvent, username_or_id: str = ""):
         """管理员查询指定用户详细信息 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not username_or_id:
             return event.plain_result("使用方式: /newapi user <用户名或用户ID>")
@@ -949,7 +1134,6 @@ class NewApiPlugin(Star):
         )
         return event.plain_result(msg)
 
-    @newapi.command("create_user", alias={"new_user", "创建用户", "开户"})
     async def create_user_cmd(
         self,
         event: AstrMessageEvent,
@@ -958,8 +1142,9 @@ class NewApiPlugin(Star):
         display_name: str = "",
     ):
         """管理员创建新用户 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not username or not password:
             return event.plain_result(
@@ -984,7 +1169,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 创建用户失败: {e}")
 
-    @newapi.command("create_cdk", alias={"cdk", "生成兑换码", "发卡", "制卡"})
     async def create_cdk_cmd(
         self,
         event: AstrMessageEvent,
@@ -993,8 +1177,9 @@ class NewApiPlugin(Star):
         name: str = "AstrBot生成",
     ):
         """管理员批量生成充值兑换码 (文本返回，方便复制)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if quota_usd <= 0:
             return event.plain_result("❌ 兑换码面额必须大于 0 美元。")
@@ -1027,7 +1212,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 创建兑换码失败: {e}")
 
-    @newapi.command("add_quota", alias={"加额度", "增加额度", "充值用户"})
     async def add_quota_cmd(
         self,
         event: AstrMessageEvent,
@@ -1035,8 +1219,9 @@ class NewApiPlugin(Star):
         quota_usd: float = 0.0,
     ):
         """管理员为指定用户增加额度 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not user_identifier or quota_usd <= 0:
             return event.plain_result(
@@ -1059,7 +1244,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 增加额度失败: {e}")
 
-    @newapi.command("sub_quota", alias={"扣额度", "扣减额度"})
     async def sub_quota_cmd(
         self,
         event: AstrMessageEvent,
@@ -1067,8 +1251,9 @@ class NewApiPlugin(Star):
         quota_usd: float = 0.0,
     ):
         """管理员扣减指定用户额度 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not user_identifier or quota_usd <= 0:
             return event.plain_result(
@@ -1091,7 +1276,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 扣减额度失败: {e}")
 
-    @newapi.command("set_quota", alias={"设额度", "设置额度", "重置额度"})
     async def set_quota_cmd(
         self,
         event: AstrMessageEvent,
@@ -1099,8 +1283,9 @@ class NewApiPlugin(Star):
         quota_usd: float = 0.0,
     ):
         """管理员直接设置指定用户额度 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not user_identifier or quota_usd < 0:
             return event.plain_result(
@@ -1123,11 +1308,11 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 设置额度失败: {e}")
 
-    @newapi.command("enable_user", alias={"解封", "解禁用户", "启用用户"})
     async def enable_user_cmd(self, event: AstrMessageEvent, user_identifier: str = ""):
         """管理员解禁/启用用户 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not user_identifier:
             return event.plain_result("使用方式: /newapi enable_user <用户ID/用户名>")
@@ -1145,13 +1330,13 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 启用用户失败: {e}")
 
-    @newapi.command("disable_user", alias={"封号", "封禁用户", "禁用用户"})
     async def disable_user_cmd(
         self, event: AstrMessageEvent, user_identifier: str = ""
     ):
         """管理员封禁/禁用用户 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         if not user_identifier:
             return event.plain_result("使用方式: /newapi disable_user <用户ID/用户名>")
@@ -1169,11 +1354,11 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 禁用用户失败: {e}")
 
-    @newapi.command("channels", alias={"channel_list", "渠道", "渠道列表"})
     async def list_channels_cmd(self, event: AstrMessageEvent):
-        """管理员查看上游渠道列表 (PIL暗色图)"""
-        if not self._check_admin_permission(event):
-            return
+        """管理员查看上游渠道列表 (PIL暗色图或纯文本)"""
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         client = self._refresh_client()
         try:
@@ -1181,16 +1366,30 @@ class NewApiPlugin(Star):
             if not channels:
                 return event.plain_result("📡 暂无已配置的上游渠道。")
 
-            img_path = DarkCardRenderer.render_channels(channels, total)
-            return event.image_result(img_path)
+            try:
+                img_path = DarkCardRenderer.render_channels(channels, total)
+                if img_path and os.path.exists(img_path):
+                    return event.image_result(img_path)
+            except Exception as e:
+                logger.warning(f"[NewAPI] 渠道暗色卡片渲染异常，降级为纯文本回复: {e}")
+
+            lines = [f"📡 【上游渠道列表 (共 {total} 个)】"]
+            for c in channels:
+                cid = c.get("id", "-")
+                cname = c.get("name", "未命名")
+                cstatus = "🟢正常" if c.get("status") == 1 else "🔴禁用"
+                resp_ms = c.get("response_time", 0)
+                resp_str = f"{resp_ms}ms" if resp_ms else "-"
+                lines.append(f"• ID:{cid} | {cname} [{cstatus}] 响应: {resp_str}")
+            return event.plain_result("\n".join(lines))
         except Exception as e:
             return event.plain_result(f"❌ 获取渠道列表失败: {e}")
 
-    @newapi.command("test_channel", alias={"测速", "测试渠道"})
     async def test_channel_cmd(self, event: AstrMessageEvent, channel_id: int = 0):
         """管理员测试渠道连接与响应延迟 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         client = self._refresh_client()
         try:
@@ -1207,7 +1406,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 渠道测试失败: {e}")
 
-    @newapi.command("token_list", alias={"tokens", "令牌列表", "查看令牌"})
     async def list_tokens_cmd(self, event: AstrMessageEvent):
         """查看当前账号的 API Key 列表 (文本返回)"""
         client = self._refresh_client()
@@ -1242,7 +1440,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 获取令牌列表失败: {e}")
 
-    @newapi.command("token_add", alias={"创建令牌", "添加令牌"})
     async def add_token_cmd(
         self,
         event: AstrMessageEvent,
@@ -1288,7 +1485,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 创建 API Key 失败: {e}")
 
-    @newapi.command("token_del", alias={"删除令牌"})
     async def del_token_cmd(self, event: AstrMessageEvent, token_id: int = 0):
         """删除指定 API Key (文本返回)"""
         if token_id <= 0:
@@ -1306,7 +1502,6 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 删除 API Key 失败: {e}")
 
-    @newapi.command("token_key", alias={"查看秘钥", "获取秘钥"})
     async def get_token_key_cmd(self, event: AstrMessageEvent, token_id: int = 0):
         """获取完整的 API Key 秘钥 (sk-...) (文本返回)"""
         if token_id <= 0:
@@ -1337,11 +1532,11 @@ class NewApiPlugin(Star):
     # Backup & Restore Commands
     # ==========================================
 
-    @newapi.command("backup", alias={"备份", "export", "导出"})
     async def backup_data_cmd(self, event: AstrMessageEvent):
         """管理员打包备份所有用户绑定与配置数据并导出 (ZIP文件+文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         try:
             # 1. 写入最新的配置备份副本
@@ -1416,11 +1611,11 @@ class NewApiPlugin(Star):
             logger.error(f"[NewAPI] 备份数据失败: {e}", exc_info=True)
             return event.plain_result(f"❌ 备份数据失败: {e}")
 
-    @newapi.command("restore", alias={"恢复", "还原"})
     async def restore_data_cmd(self, event: AstrMessageEvent, filename: str = ""):
         """管理员从备份压缩包解包复原数据 (文本返回)"""
-        if not self._check_admin_permission(event):
-            return
+        err = self._check_admin_permission(event)
+        if err:
+            return event.plain_result(err)
 
         try:
             target_zip = None
@@ -1464,27 +1659,12 @@ class NewApiPlugin(Star):
     # Regex Fallback for No-Space Commands
     # ==========================================
 
-    @filter.regex(r"^[!/／#]?newapi(?P<cmd>[^\s]+)(?:\s+(?P<args>.*))?$")
-    async def no_space_dispatcher(self, event: AstrMessageEvent):
-        """
-        兼容无空格格式的命令调用（例如 /newapi菜单 /newapi余额 /newapi绑定 123 /newapi排行 等）
-        """
-        msg = event.get_message_str().strip()
-        m = re.match(
-            r"^[!/／#]?newapi(?P<cmd>[^\s]+)(?:\s+(?P<args>.*))?$", msg, re.IGNORECASE
-        )
-        if not m:
-            return
-
-        cmd = m.group("cmd").lower().strip()
-        raw_args = (m.group("args") or "").strip()
+    async def _dispatch_target(
+        self, event: AstrMessageEvent, target: str, raw_args: str = ""
+    ):
+        raw_args = (raw_args or "").strip()
         args_list = [a.strip() for a in raw_args.split() if a.strip()]
 
-        target = CMD_MAPPING.get(cmd)
-        if not target:
-            return await self.menu(event)
-
-        # Route to exact implementation
         if target == "menu":
             return await self.menu(event)
         elif target == "admin":
@@ -1590,3 +1770,37 @@ class NewApiPlugin(Star):
         elif target == "restore":
             arg = args_list[0] if args_list else ""
             return await self.restore_data_cmd(event, arg)
+        else:
+            return await self.menu(event)
+
+    @regex(r"^[!/／#]?newapi(?:\s*(?P<cmd>[^\s]+))?(?:\s+(?P<args>.*))?$")
+    async def no_space_dispatcher(self, event: AstrMessageEvent):
+        """
+        兼容无空格格式的命令调用（例如 /newapi菜单 /newapi余额 /newapi绑定 123 /newapi排行 等）
+        """
+        msg = event.get_message_str().strip()
+        m = re.match(
+            r"^[!/／#]?newapi(?:\s*(?P<cmd>[^\s]+))?(?:\s+(?P<args>.*))?$",
+            msg,
+            re.IGNORECASE,
+        )
+        if not m:
+            return
+
+        cmd = (m.group("cmd") or "").lower().strip()
+        raw_args = (m.group("args") or "").strip()
+
+        if not cmd:
+            return await self.menu(event)
+
+        target = CMD_MAPPING.get(cmd)
+        if not target:
+            for k, v in CMD_MAPPING.items():
+                if cmd == k:
+                    target = v
+                    break
+
+        if not target:
+            return await self.menu(event)
+
+        return await self._dispatch_target(event, target, raw_args)

@@ -1,6 +1,6 @@
 name: astr_newapi_plugin
 desc: NewAPI 站点信息查询与全能管理插件，支持绑定账号查询用量/余额/订阅、全站统计、天/周/月/总消耗排行、用户管理、批量兑换码生成、数据备份与复原等功能。
-help: 输入 /newapi help 或 /newapi 菜单 查看功能，输入 /newapi 备份 可导出数据压缩包。
+help: 输入 /newapi 查看功能菜单，输入 /newapi 备份 可导出数据压缩包。
 version: v1.2.0
 author: Developer
 repo: ""
