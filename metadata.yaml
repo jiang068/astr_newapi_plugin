@@ -3,4 +3,4 @@ desc: NewAPI 站点信息查询与全能管理插件，支持绑定账号查询�
 help: 输入 /newapi help 或 /newapi 菜单 查看功能，输入 /newapi 备份 可导出数据压缩包。
 version: v1.2.0
 author: Developer
-repo: https://github.com/Soulter/AstrBot
+repo: ""

@@ -13,8 +13,12 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
-from .newapi_client import NewAPIClient
-from .renderer import DarkCardRenderer
+try:
+    from .newapi_client import NewAPIClient
+    from .renderer import DarkCardRenderer
+except ImportError:
+    from newapi_client import NewAPIClient
+    from renderer import DarkCardRenderer
 
 
 def get_plugin_data_dir() -> Path:
@@ -28,9 +32,16 @@ def get_plugin_data_dir() -> Path:
     except Exception:
         pass
 
-    p = Path("data/plugin_data/astr_newapi_plugin").resolve()
+    try:
+        p = Path("data/plugin_data/astr_newapi_plugin").resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    except Exception:
+        pass
+
+    p = Path(__file__).resolve().parent / "data"
     p.mkdir(parents=True, exist_ok=True)
-    return p
+    return p.resolve()
 
 
 def migrate_legacy_data(target_dir: Path) -> None:
@@ -174,7 +185,6 @@ CMD_MAPPING = {
     "Developer",
     "NewAPI 站点信息查询与管理插件，支持绑定账号查询用量/余额/订阅、全站统计、天/周/月/总消耗排行、用户管理、批量兑换码生成、数据备份与复原等功能。",
     "1.2.0",
-    "https://github.com/Soulter/AstrBot",
 )
 class NewApiPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:

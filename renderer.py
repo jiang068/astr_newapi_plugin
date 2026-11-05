@@ -16,17 +16,50 @@ def _find_system_font() -> Optional[str]:
         return _FONT_PATH
 
     candidates = [
+        # Windows
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msyh.ttf",
         "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/simsun.ttc",
+        # Linux (Ubuntu, Debian, CentOS)
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/cjkuni-uming/uming.ttc",
+        # macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
     ]
     for p in candidates:
         if os.path.exists(p):
             _FONT_PATH = p
             return p
+
+    # Dynamic search in Linux font directories
+    linux_font_dirs = [
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+        os.path.expanduser("~/.fonts"),
+    ]
+    for fdir in linux_font_dirs:
+        if os.path.isdir(fdir):
+            for root, _, files in os.walk(fdir):
+                for file in files:
+                    lower = file.lower()
+                    if lower.endswith((".ttc", ".ttf", ".otf")) and any(
+                        k in lower
+                        for k in ["wqy", "noto", "cjk", "hei", "song", "kai", "sans"]
+                    ):
+                        full_p = os.path.join(root, file)
+                        _FONT_PATH = full_p
+                        return full_p
+
     _FONT_PATH = ""
     return None
 
