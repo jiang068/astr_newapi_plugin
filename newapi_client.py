@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 
 
@@ -12,12 +12,14 @@ class NewAPIClient:
         timeout: int = 15,
         proxy: Optional[str] = None,
         quota_per_unit: int = 500000,
+        user_id: Optional[Union[int, str]] = None,
     ):
         self.base_url = self._normalize_url(base_url)
         self.token = token.strip()
         self.timeout = timeout
         self.proxy = proxy.strip() if proxy else None
         self.quota_per_unit = quota_per_unit or 500000
+        self.user_id = str(user_id).strip() if user_id is not None else ""
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -41,6 +43,8 @@ class NewAPIClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        if self.user_id:
+            headers["New-Api-User"] = self.user_id
         return headers
 
     def _create_client(self) -> httpx.AsyncClient:
@@ -90,11 +94,11 @@ class NewAPIClient:
             if response.status_code >= 400:
                 err_msg = ""
                 if isinstance(data, dict):
-                    err_msg = (
-                        data.get("message")
-                        or data.get("error", {}).get("message")
-                        or str(data)
+                    error = data.get("error")
+                    error_msg = (
+                        error.get("message") if isinstance(error, dict) else error
                     )
+                    err_msg = data.get("message") or error_msg or str(data)
                 else:
                     err_msg = str(data)
                 raise RuntimeError(f"API 请求失败 [{response.status_code}]: {err_msg}")
@@ -140,12 +144,6 @@ class NewAPIClient:
     async def get_performance_stats(self) -> Dict[str, Any]:
         """GET /api/performance/stats"""
         res = await self._request("GET", "/api/performance/stats")
-
-        print(
-            "[NewAPI DEBUG] Raw Performance Response:",
-            repr(res)
-        )
-
         return res.get("data", res)
 
     # --- Self / Current User ---

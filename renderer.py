@@ -2,6 +2,8 @@ import os
 import tempfile
 import time
 import uuid
+import unicodedata
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
@@ -10,23 +12,29 @@ _FONT_CACHE: Dict[int, ImageFont.FreeTypeFont] = {}
 _FONT_PATH: Optional[str] = None
 
 
-# Monochrome Emoji font
-_EMOJI_FONT_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "NotoEmoji-Regular.ttf"
-)
-
-_EMOJI_FONT_CACHE = {}
+_EMOJI_FONT_PATH = Path(__file__).resolve().parent / "NotoEmoji-Variable.ttf"
+_EMOJI_FONT_CACHE: Dict[int, Optional[ImageFont.FreeTypeFont]] = {}
+_EMOJI_FONT_WARNING_REPORTED = False
 
 _EMOJI_CHARS = set(
     "🏆🤖🏢⚡🖥🌐🟢🔴📡"
 )
 
 def _get_emoji_font(size: int):
+    global _EMOJI_FONT_WARNING_REPORTED
     if size not in _EMOJI_FONT_CACHE:
-        _EMOJI_FONT_CACHE[size] = ImageFont.truetype(
-            _EMOJI_FONT_PATH, size
-        )
+        try:
+            if not _EMOJI_FONT_PATH.is_file():
+                raise FileNotFoundError(f"Emoji font not found: {_EMOJI_FONT_PATH}")
+            _EMOJI_FONT_CACHE[size] = ImageFont.truetype(str(_EMOJI_FONT_PATH), size)
+        except (OSError, ValueError) as e:
+            _EMOJI_FONT_CACHE[size] = None
+            if not _EMOJI_FONT_WARNING_REPORTED:
+                print(
+                    "[NewAPI Renderer] Emoji font unavailable; "
+                    f"using CJK fallback: {e}"
+                )
+                _EMOJI_FONT_WARNING_REPORTED = True
     return _EMOJI_FONT_CACHE[size]
 
 
@@ -43,37 +51,51 @@ def _draw_text(draw, xy, text, **kwargs):
 
     base_ascent = base_font.getmetrics()[0]
 
+    def is_emoji(ch: str) -> bool:
+        return ch in _EMOJI_CHARS or unicodedata.category(ch) == "So"
+
+    # Keep variation selectors, skin-tone modifiers, and ZWJ sequences with
+    # their base emoji so the emoji font can draw a complete glyph cluster.
+    clusters: List[str] = []
     for ch in text:
-        # Ignore emoji variation selector
-        if ch == "\ufe0f":
-            continue
-
-        if ch in _EMOJI_CHARS:
-            font = _get_emoji_font(
-                base_font.size
-            )
-
-            ascent = font.getmetrics()[0]
-
-            # Align emoji baseline with the main font
-            _draw_text(draw,
-                (x, y + base_ascent - ascent),
-                ch,
-                font=font,
-                **kwargs
-            )
-
-            x += font.getlength(ch)
-
+        if clusters and (
+            ch in ("\ufe0e", "\ufe0f", "\u200d")
+            or clusters[-1].endswith("\u200d")
+            or unicodedata.combining(ch)
+            or 0x1F3FB <= ord(ch) <= 0x1F3FF
+        ):
+            clusters[-1] += ch
         else:
-            _draw_text(draw,
-                (x, y),
-                ch,
-                font=base_font,
-                **kwargs
-            )
+            clusters.append(ch)
 
-            x += base_font.getlength(ch)
+    run = ""
+
+    def draw_run(value: str, font: ImageFont.FreeTypeFont) -> None:
+        nonlocal x
+        if value:
+            draw.text((x, y), value, font=font, **kwargs)
+            x += draw.textlength(value, font=font)
+
+    for cluster in clusters:
+        if is_emoji(cluster[0]):
+            draw_run(run, base_font)
+            run = ""
+            emoji_font = _get_emoji_font(base_font.size)
+            if emoji_font is not None:
+                emoji_ascent = emoji_font.getmetrics()[0]
+                draw.text(
+                    (x, y + base_ascent - emoji_ascent),
+                    cluster,
+                    font=emoji_font,
+                    **kwargs,
+                )
+                x += draw.textlength(cluster, font=emoji_font)
+            else:
+                draw_run(cluster, base_font)
+        else:
+            run += cluster
+
+    draw_run(run, base_font)
 
 def _find_system_font() -> Optional[str]:
     global _FONT_PATH
@@ -143,6 +165,17 @@ def _get_temp_path() -> str:
     # Cleanup old temp files occasionally
     temp_dir = tempfile.gettempdir()
     return os.path.join(temp_dir, f"newapi_{uuid.uuid4().hex[:10]}.png")
+
+
+def format_bytes(value: Optional[float]) -> str:
+    """Format a byte count without rounding small values down to zero MB."""
+    if value is None:
+        return "暂不可获取"
+    amount = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if amount < 1024 or unit == "TB":
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
 
 
 def _draw_progress_bar(
@@ -621,80 +654,89 @@ class DarkCardRenderer:
         # Section: Hardware Metrics (CPU, Memory, Disk)
         _draw_text(draw,
             (padding + 24, curr_y),
-            "🖥️ 硬件资源负载",
+            "🖥️ NewAPI 远程资源",
             fill=cls.ACCENT_BLUE,
             font=font_sec,
         )
         curr_y += 28
 
-        # 1. CPU Usage
-        cpu_pct = float(sys_metrics.get("cpu_percent", 0.0))
+        # 1. CPU Usage (not returned by /api/performance/stats)
+        cpu_pct = sys_metrics.get("cpu_percent")
         _draw_text(draw,
             (padding + 28, curr_y),
             "CPU 使用率:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
+        cpu_text = (
+            f"{cpu_pct:.1f}%"
+            if isinstance(cpu_pct, (int, float))
+            else "暂不可获取"
+        )
         _draw_text(draw,
             (padding + 120, curr_y),
-            f"{cpu_pct:.1f}%",
+            cpu_text,
             fill=cls.TEXT_PRIMARY,
             font=font_val,
         )
-        cpu_bar_color = cls.ACCENT_RED if cpu_pct > 85 else cls.ACCENT_BLUE
-        _draw_progress_bar(
-            draw, padding + 220, curr_y + 3, 400, 14, cpu_pct, fill_color=cpu_bar_color
-        )
+        if isinstance(cpu_pct, (int, float)):
+            cpu_bar_color = cls.ACCENT_RED if cpu_pct > 85 else cls.ACCENT_BLUE
+            _draw_progress_bar(
+                draw, padding + 220, curr_y + 3, 400, 14, cpu_pct, fill_color=cpu_bar_color
+            )
         curr_y += 32
 
-        # 2. Memory Usage
-        mem_pct = float(sys_metrics.get("mem_percent", 0.0))
-        mem_used_gb = float(sys_metrics.get("mem_used_gb", 0.0))
-        mem_total_gb = float(sys_metrics.get("mem_total_gb", 0.0))
+        # 2. NewAPI process memory (alloc/sys), not whole-server RAM.
+        mem_alloc = sys_metrics.get("mem_alloc_bytes")
+        mem_sys = sys_metrics.get("mem_sys_bytes")
         _draw_text(draw,
             (padding + 28, curr_y),
-            "内存使用率:",
+            "进程内存:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
+        alloc_text = format_bytes(mem_alloc)
+        sys_text = format_bytes(mem_sys)
+        mem_text = f"Alloc {alloc_text} / Sys {sys_text}"
         _draw_text(draw,
             (padding + 120, curr_y),
-            f"{mem_pct:.1f}% ({mem_used_gb:.1f}G/{mem_total_gb:.1f}G)",
+            mem_text,
             fill=cls.TEXT_PRIMARY,
             font=font_val,
-        )
-        mem_bar_color = cls.ACCENT_RED if mem_pct > 85 else cls.ACCENT_GREEN
-        _draw_progress_bar(
-            draw, padding + 280, curr_y + 3, 340, 14, mem_pct, fill_color=mem_bar_color
         )
         curr_y += 32
 
         # 3. Disk Usage
-        disk_pct = float(sys_metrics.get("disk_percent", 0.0))
-        disk_used_gb = float(sys_metrics.get("disk_used_gb", 0.0))
-        disk_total_gb = float(sys_metrics.get("disk_total_gb", 0.0))
+        disk_pct = sys_metrics.get("disk_percent")
+        disk_used_gb = sys_metrics.get("disk_used_gb")
+        disk_total_gb = sys_metrics.get("disk_total_gb")
         _draw_text(draw,
             (padding + 28, curr_y),
-            "硬盘使用率:",
+            "缓存所在盘:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
         _draw_text(draw,
             (padding + 120, curr_y),
-            f"{disk_pct:.1f}% ({disk_used_gb:.1f}G/{disk_total_gb:.1f}G)",
+            (
+                f"{disk_pct:.1f}%" if isinstance(disk_pct, (int, float)) else "暂不可获取"
+            )
+            + f" ({disk_used_gb if disk_used_gb is not None else '暂不可获取'}G/"
+            + f"{disk_total_gb if disk_total_gb is not None else '暂不可获取'}G)",
             fill=cls.TEXT_PRIMARY,
             font=font_val,
         )
-        disk_bar_color = cls.ACCENT_RED if disk_pct > 85 else cls.ACCENT_PEACH
-        _draw_progress_bar(
-            draw,
-            padding + 280,
-            curr_y + 3,
-            340,
-            14,
-            disk_pct,
-            fill_color=disk_bar_color,
-        )
+        if isinstance(disk_pct, (int, float)):
+            disk_bar_color = cls.ACCENT_RED if disk_pct > 85 else cls.ACCENT_PEACH
+            _draw_progress_bar(
+                draw,
+                padding + 400,
+                curr_y + 3,
+                220,
+                14,
+                disk_pct,
+                fill_color=disk_bar_color,
+            )
         curr_y += 36
 
         draw.line(

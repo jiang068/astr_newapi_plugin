@@ -17,8 +17,8 @@
 3. **🎨 动静分离渲染（信息多时暗色画图，少时文字速回）**：
    - **信息项较多时自动使用 PIL 绘制紧凑精美的暗色卡片**：菜单、用户排行榜、模型排行榜、系统与服务器硬件状态、渠道列表等均采用轻量暗色模版（<30ms 极速生成，内存与带宽占用极低）。
    - **信息项较少或需复制时直接返回文字**：账户余额简报、兑换码 CDK 生成（方便直接长按复制）、增减额度结果、封禁解禁等。
-4. **🖥️ 状态监控包含硬件资源负载**：
-   - `/newapi status` 不仅展示 NewAPI 站点名称、版本与启动时间，还包含服务器实时 **CPU 使用率**、**内存占用（已用/总计）**、**磁盘空间占用** 的进度条与数值显示。
+4. **🖥️ 状态监控读取 NewAPI 远程数据**：
+   - `/newapi status` 从 NewAPI 性能接口读取缓存目录所在盘的空间和 Go 进程内存；接口未提供的 CPU 和整机内存指标显示“暂不可获取”，不会使用 AstrBot 本机数据代替。
 5. **🔤 灵活的前缀与中英文指令兼容**：
    - **全兼容中文别名**：如 `/newapi 菜单`、`/newapi 余额`、`/newapi 绑定`、`/newapi 排行`、`/newapi 备份`、`/newapi 恢复` 等。
    - **有空格与无空格均可识别**：如 `/newapi menu` 与 `/newapimenu`、`/newapi 余额` 与 `/newapi余额`、`/newapi 备份` 与 `/newapi备份`。
@@ -34,7 +34,8 @@
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :---: | :---: | :--- |
 | `site_url` | 字符串 | `""` | NewAPI 站点地址，例如 `https://api.example.com` 或 `http://127.0.0.1:3000` |
-| `api_token` | 字符串 | `""` | NewAPI 访问令牌（PAT `nap_...` 或系统令牌） |
+| `api_token` | 字符串 | `""` | NewAPI 访问令牌（PAT `nap_...` 或系统令牌）；性能接口需 Root 权限，不要填写模型 API Key |
+| `api_user_id` | 字符串 | `""` | 访问令牌所属账户的数字用户 ID，可从 `GET /api/user/self` 的 `data.id` 获取 |
 | `enable_admin` | 布尔值 | `true` | 是否启用管理功能。关闭后管理指令直接静默失效 |
 | `admin_only` | 布尔值 | `true` | 管理类指令是否仅限 AstrBot 机器人管理员调用（非管理员调用直接静默） |
 | `request_timeout` | 整数 | `15` | 请求 NewAPI 超时时间（秒） |
@@ -65,7 +66,7 @@
 | `/newapi stat` 或 `/newapi 全站统计` | `[today/week/month/all]` | 📝 文字 | 查询全站总消耗金额、当前 RPM 与 TPM |
 | `/newapi ranking` 或 `/newapi 排行` | `[day/week/month/total]` | 🖼️ 暗色卡片 | 全站用户消耗排行榜 Top 10（天/周/月/总） |
 | `/newapi model_ranking` 或 `/newapi 模型排行` | `[today/week/month/year]` | 🖼️ 暗色卡片 | AI 模型与各厂商 Token 消耗排行 |
-| `/newapi status` 或 `/newapi 状态` | 无 | 🖼️ 暗色卡片 | 查询站点系统参数与服务器 CPU/内存/磁盘占用 |
+| `/newapi status` 或 `/newapi 状态` | 无 | 🖼️ 暗色卡片 | 查询站点参数、NewAPI 进程内存和缓存目录所在磁盘；接口未提供的指标显示“暂不可获取” |
 | `/newapi redeem` 或 `/newapi 兑换` | `<兑换码CDK>` | 📝 文字 | 使用充值卡 CDK 为当前账号充值 |
 
 ### 2. 👑 管理员指令（权限不足或关闭时静默）

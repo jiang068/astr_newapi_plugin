@@ -8,7 +8,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import psutil
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, MessageChain, MessageEventResult
@@ -18,7 +17,6 @@ from astrbot.api.event.filter import (
     command,
     event_message_type,
     permission_type,
-    regex,
 )
 from astrbot.api.message_components import Image, Plain
 from astrbot.core.star.filter.command import GreedyStr
@@ -26,10 +24,10 @@ from astrbot.api.star import Context, Star, register
 
 try:
     from .newapi_client import NewAPIClient
-    from .renderer import DarkCardRenderer
+    from .renderer import DarkCardRenderer, format_bytes
 except ImportError:
     from newapi_client import NewAPIClient
-    from renderer import DarkCardRenderer
+    from renderer import DarkCardRenderer, format_bytes
 
 
 def get_plugin_data_dir() -> Path:
@@ -214,6 +212,7 @@ class NewApiPlugin(Star):
     def _init_client(self) -> NewAPIClient:
         site_url = self.config.get("site_url", "")
         api_token = self.config.get("api_token", "")
+        api_user_id = self.config.get("api_user_id", "")
         timeout = int(self.config.get("request_timeout", 15) or 15)
         proxy = self.config.get("proxy", "") or None
         quota_per_unit = int(self.config.get("quota_per_unit", 500000) or 500000)
@@ -223,6 +222,7 @@ class NewApiPlugin(Star):
             timeout=timeout,
             proxy=proxy,
             quota_per_unit=quota_per_unit,
+            user_id=api_user_id,
         )
 
     def _refresh_client(self) -> NewAPIClient:
@@ -452,36 +452,6 @@ class NewApiPlugin(Star):
             pass
 
         return None, None
-
-    def _collect_hardware_metrics(self) -> Dict[str, Any]:
-        """Collect local hardware CPU, Memory, and Disk stats using psutil."""
-        try:
-            cpu = psutil.cpu_percent(interval=None)
-            mem = psutil.virtual_memory()
-            drive_root = (
-                os.path.splitdrive(os.getcwd())[0] + "\\" if os.name == "nt" else "/"
-            )
-            disk = psutil.disk_usage(drive_root)
-            return {
-                "cpu_percent": cpu,
-                "mem_percent": mem.percent,
-                "mem_used_gb": round(mem.used / (1024**3), 1),
-                "mem_total_gb": round(mem.total / (1024**3), 1),
-                "disk_percent": disk.percent,
-                "disk_used_gb": round(disk.used / (1024**3), 1),
-                "disk_total_gb": round(disk.total / (1024**3), 1),
-            }
-        except Exception as e:
-            logger.warning(f"[NewAPI] 获取硬件监控指标异常: {e}")
-            return {
-                "cpu_percent": 0.0,
-                "mem_percent": 0.0,
-                "mem_used_gb": 0.0,
-                "mem_total_gb": 0.0,
-                "disk_percent": 0.0,
-                "disk_used_gb": 0.0,
-                "disk_total_gb": 0.0,
-            }
 
     # ==========================================
     # Master Command & Standalone Registrations
@@ -1024,35 +994,44 @@ class NewApiPlugin(Star):
         except Exception as e:
             return event.plain_result(f"❌ 获取站点状态失败: {e}")
 
-        # Collect hardware metrics
-        sys_metrics = self._collect_hardware_metrics()
-
-        # If NewAPI performance stats are available, merge disk or memory info if remote
+        # Only display values returned by NewAPI; unavailable values stay None.
+        sys_metrics = {
+            "cpu_percent": None,
+            "mem_alloc_bytes": None,
+            "mem_sys_bytes": None,
+            "disk_percent": None,
+            "disk_used_gb": None,
+            "disk_total_gb": None,
+        }
         try:
             perf = await client.get_performance_stats()
             logger.info(
-                "[NewAPI DEBUG] Performance Stats: %s",
-                json.dumps(perf, ensure_ascii=False, indent=2)
+                "[NewAPI] /api/performance/stats response: %s",
+                json.dumps(perf, ensure_ascii=False),
             )
         except Exception as e:
-            logger.exception(
-                "[NewAPI] 获取 NewAPI 远程性能数据失败: %s", e
-            )
-            perf = {}
-        logger.info(
-            "[NewAPI DEBUG] Performance Stats: %s",
-            json.dumps(perf, ensure_ascii=False, indent=2)
-        )
-        if perf and isinstance(perf, dict):
-            disk_info = perf.get("disk_space_info", {})
-            if isinstance(disk_info, dict) and disk_info.get("total", 0) > 0:
-                tot_gb = round(disk_info["total"] / (1024**3), 1)
-                used_gb = round(disk_info.get("used", 0) / (1024**3), 1)
-                sys_metrics["disk_used_gb"] = used_gb
-                sys_metrics["disk_total_gb"] = tot_gb
-                sys_metrics["disk_percent"] = round(
-                    disk_info.get("used_percent", 0.0), 1
-                )
+            logger.error("[NewAPI] 获取远程性能数据失败: %s", e)
+            perf = None
+
+        if isinstance(perf, dict):
+            memory_stats = perf.get("memory_stats")
+            if isinstance(memory_stats, dict):
+                for key in ("alloc", "sys"):
+                    value = memory_stats.get(key)
+                    if isinstance(value, (int, float)) and value >= 0:
+                        sys_metrics[f"mem_{key}_bytes"] = value
+
+            disk_info = perf.get("disk_space_info")
+            if isinstance(disk_info, dict):
+                total = disk_info.get("total")
+                used = disk_info.get("used")
+                percent = disk_info.get("used_percent")
+                if isinstance(total, (int, float)) and total > 0:
+                    sys_metrics["disk_total_gb"] = round(total / (1024**3), 1)
+                    if isinstance(used, (int, float)) and used >= 0:
+                        sys_metrics["disk_used_gb"] = round(used / (1024**3), 1)
+                if isinstance(percent, (int, float)) and 0 <= percent <= 100:
+                    sys_metrics["disk_percent"] = round(percent, 1)
 
         try:
             img_path = DarkCardRenderer.render_status(status, sys_metrics)
@@ -1063,13 +1042,33 @@ class NewApiPlugin(Star):
 
         s_name = status.get("system_name", "NewAPI 站点")
         ver = status.get("version", "未知")
+        cpu_percent = sys_metrics["cpu_percent"]
+        cpu_text = f"{cpu_percent:.1f}%" if cpu_percent is not None else "暂不可获取"
+        mem_alloc = sys_metrics["mem_alloc_bytes"]
+        mem_sys = sys_metrics["mem_sys_bytes"]
+        alloc_text = format_bytes(mem_alloc)
+        sys_text = format_bytes(mem_sys)
+        memory_text = f"Alloc {alloc_text} / Sys {sys_text}"
+        disk_percent = sys_metrics["disk_percent"]
+        disk_used = sys_metrics["disk_used_gb"]
+        disk_total = sys_metrics["disk_total_gb"]
+        disk_percent_text = (
+            f"{disk_percent:.1f}%" if disk_percent is not None else "暂不可获取"
+        )
+        disk_used_text = (
+            f"{disk_used:.1f}GB" if disk_used is not None else "暂不可获取"
+        )
+        disk_total_text = (
+            f"{disk_total:.1f}GB" if disk_total is not None else "暂不可获取"
+        )
+        disk_text = f"{disk_percent_text} ({disk_used_text} / {disk_total_text})"
         return event.plain_result(
             f"🖥️ 【{s_name} 系统状态】\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• 站点版本: {ver}\n"
-            f"• CPU 占用: {sys_metrics.get('cpu_percent', 0.0)}%\n"
-            f"• 内存占用: {sys_metrics.get('mem_percent', 0.0)}% ({sys_metrics.get('mem_used_gb', 0.0)}GB / {sys_metrics.get('mem_total_gb', 0.0)}GB)\n"
-            f"• 磁盘占用: {sys_metrics.get('disk_percent', 0.0)}% ({sys_metrics.get('disk_used_gb', 0.0)}GB / {sys_metrics.get('disk_total_gb', 0.0)}GB)"
+            f"• CPU 占用: {cpu_text}\n"
+            f"• 进程内存: {memory_text}\n"
+            f"• 缓存所在盘: {disk_text}"
         )
 
     async def redeem(self, event: AstrMessageEvent, cdk_key: str = ""):

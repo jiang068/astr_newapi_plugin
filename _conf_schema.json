@@ -9,7 +9,14 @@
     "api_token": {
         "description": "访问令牌 (API Token)",
         "type": "string",
-        "hint": "填入 NewAPI 管理员或用户的访问令牌 (PAT / nap_... 或 系统令牌)。用于身份认证和调用接口",
+        "hint": "填入 NewAPI 访问令牌 (PAT / nap_... 或系统令牌)。性能监控要求具有 Root 权限；不要填写普通模型 API Key",
+        "default": "",
+        "obvious_hint": true
+    },
+    "api_user_id": {
+        "description": "NewAPI 用户 ID",
+        "type": "string",
+        "hint": "填写访问令牌所属账户的数字用户 ID（GET /api/user/self 返回的 data.id）；性能接口需要 Root 权限",
         "default": "",
         "obvious_hint": true
     },
