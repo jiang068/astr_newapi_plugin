@@ -10,6 +10,71 @@ _FONT_CACHE: Dict[int, ImageFont.FreeTypeFont] = {}
 _FONT_PATH: Optional[str] = None
 
 
+# Monochrome Emoji font
+_EMOJI_FONT_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "NotoEmoji-Regular.ttf"
+)
+
+_EMOJI_FONT_CACHE = {}
+
+_EMOJI_CHARS = set(
+    "🏆🤖🏢⚡🖥🌐🟢🔴📡"
+)
+
+def _get_emoji_font(size: int):
+    if size not in _EMOJI_FONT_CACHE:
+        _EMOJI_FONT_CACHE[size] = ImageFont.truetype(
+            _EMOJI_FONT_PATH, size
+        )
+    return _EMOJI_FONT_CACHE[size]
+
+
+def _draw_text(draw, xy, text, **kwargs):
+    """
+    Draw mixed Chinese/English/Emoji text.
+    Chinese and English use the original font.
+    Emoji use monochrome Noto Emoji.
+    """
+    text = str(text)
+    base_font = kwargs.pop("font")
+
+    x, y = xy
+
+    base_ascent = base_font.getmetrics()[0]
+
+    for ch in text:
+        # Ignore emoji variation selector
+        if ch == "\ufe0f":
+            continue
+
+        if ch in _EMOJI_CHARS:
+            font = _get_emoji_font(
+                base_font.size
+            )
+
+            ascent = font.getmetrics()[0]
+
+            # Align emoji baseline with the main font
+            _draw_text(draw,
+                (x, y + base_ascent - ascent),
+                ch,
+                font=font,
+                **kwargs
+            )
+
+            x += font.getlength(ch)
+
+        else:
+            _draw_text(draw,
+                (x, y),
+                ch,
+                font=base_font,
+                **kwargs
+            )
+
+            x += base_font.getlength(ch)
+
 def _find_system_font() -> Optional[str]:
     global _FONT_PATH
 
@@ -166,13 +231,13 @@ class DarkCardRenderer:
             radius=3,
             fill=cls.ACCENT_BLUE,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y - 2),
             title,
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y + 28),
             subtitle,
             fill=cls.TEXT_SECONDARY,
@@ -195,7 +260,7 @@ class DarkCardRenderer:
                 radius=6,
                 fill=cls.BORDER_COLOR,
             )
-            draw.text(
+            _draw_text(draw,
                 (padding + 30, curr_y + 3),
                 sec_title,
                 fill=cls.ACCENT_BLUE,
@@ -205,14 +270,14 @@ class DarkCardRenderer:
 
             for cmd, desc in items:
                 # Command
-                draw.text(
+                _draw_text(draw,
                     (padding + 24, curr_y),
                     cmd,
                     fill=cls.ACCENT_GREEN,
                     font=font_cmd,
                 )
                 # Description
-                draw.text(
+                _draw_text(draw,
                     (padding + 230, curr_y),
                     desc,
                     fill=cls.TEXT_SECONDARY,
@@ -230,7 +295,7 @@ class DarkCardRenderer:
                 width=1,
             )
             curr_y += 10
-            draw.text(
+            _draw_text(draw,
                 (padding + 24, curr_y),
                 footer_note,
                 fill=cls.TEXT_MUTED,
@@ -280,13 +345,13 @@ class DarkCardRenderer:
             radius=3,
             fill=cls.ACCENT_YELLOW,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y - 2),
             f"🏆 全站用户消耗排行 - {period_label} Top {len(rows)}",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y + 26),
             "按实际模型调用消耗金额统计",
             fill=cls.TEXT_SECONDARY,
@@ -317,7 +382,7 @@ class DarkCardRenderer:
             # Rank badge
             rank_color = medals_color.get(rank, cls.TEXT_MUTED)
             rank_badge_text = f"#{rank}"
-            draw.text(
+            _draw_text(draw,
                 (padding + 28, curr_y + 6),
                 rank_badge_text,
                 fill=rank_color,
@@ -325,7 +390,7 @@ class DarkCardRenderer:
             )
 
             # Username
-            draw.text(
+            _draw_text(draw,
                 (padding + 85, curr_y + 7),
                 name[:24],
                 fill=cls.TEXT_PRIMARY,
@@ -334,7 +399,7 @@ class DarkCardRenderer:
 
             # Extra info if any
             if extra:
-                draw.text(
+                _draw_text(draw,
                     (padding + 270, curr_y + 8),
                     extra,
                     fill=cls.TEXT_MUTED,
@@ -344,7 +409,7 @@ class DarkCardRenderer:
             # Quota formatted (right aligned)
             val_bbox = draw.textbbox((0, 0), quota_str, font=font_val)
             val_w = val_bbox[2] - val_bbox[0]
-            draw.text(
+            _draw_text(draw,
                 (width - padding - 30 - val_w, curr_y + 7),
                 quota_str,
                 fill=cls.ACCENT_GREEN,
@@ -401,13 +466,13 @@ class DarkCardRenderer:
             radius=3,
             fill=cls.ACCENT_BLUE,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y - 2),
             f"🤖 模型消耗排行 - {period_label} Top {model_count}",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y + 26),
             "各模型与厂商 Token 调用量及占比",
             fill=cls.TEXT_SECONDARY,
@@ -428,14 +493,14 @@ class DarkCardRenderer:
             tokens = m.get("total_tokens", 0)
             share = m.get("share", 0.0)
 
-            draw.text(
+            _draw_text(draw,
                 (padding + 24, curr_y),
                 f"{i}.",
                 fill=cls.ACCENT_YELLOW if i <= 3 else cls.TEXT_MUTED,
                 font=font_item,
             )
             model_display = f"{mname} [{vendor}]" if vendor else mname
-            draw.text(
+            _draw_text(draw,
                 (padding + 52, curr_y),
                 model_display[:30],
                 fill=cls.TEXT_PRIMARY,
@@ -445,7 +510,7 @@ class DarkCardRenderer:
             tok_str = f"{tokens:,} Tokens ({share:.1f}%)"
             bbox = draw.textbbox((0, 0), tok_str, font=font_item)
             w = bbox[2] - bbox[0]
-            draw.text(
+            _draw_text(draw,
                 (width - padding - 26 - w, curr_y),
                 tok_str,
                 fill=cls.ACCENT_GREEN,
@@ -462,7 +527,7 @@ class DarkCardRenderer:
                 width=1,
             )
             curr_y += 12
-            draw.text(
+            _draw_text(draw,
                 (padding + 24, curr_y),
                 "🏢 厂商调用份额占比:",
                 fill=cls.ACCENT_PEACH,
@@ -474,7 +539,7 @@ class DarkCardRenderer:
                 vname = v.get("vendor", "其他")
                 tokens = v.get("total_tokens", 0)
                 share = v.get("share", 0.0)
-                draw.text(
+                _draw_text(draw,
                     (padding + 30, curr_y),
                     f"• {vname}",
                     fill=cls.TEXT_SECONDARY,
@@ -483,7 +548,7 @@ class DarkCardRenderer:
                 v_str = f"{tokens:,} Tokens ({share:.1f}%)"
                 bbox = draw.textbbox((0, 0), v_str, font=font_item)
                 w = bbox[2] - bbox[0]
-                draw.text(
+                _draw_text(draw,
                     (width - padding - 26 - w, curr_y),
                     v_str,
                     fill=cls.TEXT_PRIMARY,
@@ -532,13 +597,13 @@ class DarkCardRenderer:
         )
         sys_name = site_info.get("system_name", "NewAPI")
         version = site_info.get("version", "未知")
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y - 2),
             f"⚡ {sys_name} 站点与系统运行状态",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y + 26),
             f"版本: {version}  |  状态正常运行中",
             fill=cls.TEXT_SECONDARY,
@@ -554,7 +619,7 @@ class DarkCardRenderer:
         curr_y += 14
 
         # Section: Hardware Metrics (CPU, Memory, Disk)
-        draw.text(
+        _draw_text(draw,
             (padding + 24, curr_y),
             "🖥️ 硬件资源负载",
             fill=cls.ACCENT_BLUE,
@@ -564,13 +629,13 @@ class DarkCardRenderer:
 
         # 1. CPU Usage
         cpu_pct = float(sys_metrics.get("cpu_percent", 0.0))
-        draw.text(
+        _draw_text(draw,
             (padding + 28, curr_y),
             "CPU 使用率:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 120, curr_y),
             f"{cpu_pct:.1f}%",
             fill=cls.TEXT_PRIMARY,
@@ -586,13 +651,13 @@ class DarkCardRenderer:
         mem_pct = float(sys_metrics.get("mem_percent", 0.0))
         mem_used_gb = float(sys_metrics.get("mem_used_gb", 0.0))
         mem_total_gb = float(sys_metrics.get("mem_total_gb", 0.0))
-        draw.text(
+        _draw_text(draw,
             (padding + 28, curr_y),
             "内存使用率:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 120, curr_y),
             f"{mem_pct:.1f}% ({mem_used_gb:.1f}G/{mem_total_gb:.1f}G)",
             fill=cls.TEXT_PRIMARY,
@@ -608,13 +673,13 @@ class DarkCardRenderer:
         disk_pct = float(sys_metrics.get("disk_percent", 0.0))
         disk_used_gb = float(sys_metrics.get("disk_used_gb", 0.0))
         disk_total_gb = float(sys_metrics.get("disk_total_gb", 0.0))
-        draw.text(
+        _draw_text(draw,
             (padding + 28, curr_y),
             "硬盘使用率:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 120, curr_y),
             f"{disk_pct:.1f}% ({disk_used_gb:.1f}G/{disk_total_gb:.1f}G)",
             fill=cls.TEXT_PRIMARY,
@@ -640,7 +705,7 @@ class DarkCardRenderer:
         curr_y += 14
 
         # Section: Site & Environment
-        draw.text(
+        _draw_text(draw,
             (padding + 24, curr_y),
             "🌐 站点服务参数",
             fill=cls.ACCENT_BLUE,
@@ -656,25 +721,25 @@ class DarkCardRenderer:
             else "未知"
         )
 
-        draw.text(
+        _draw_text(draw,
             (padding + 28, curr_y),
             "• 额度换算比例:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 150, curr_y),
             f"1 USD = {quota_unit:,} 点",
             fill=cls.ACCENT_GREEN,
             font=font_val,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 380, curr_y),
             "• 站点启动时间:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 490, curr_y), uptime_str, fill=cls.TEXT_PRIMARY, font=font_val
         )
         curr_y += 28
@@ -684,42 +749,42 @@ class DarkCardRenderer:
         wechat_l = "🟢开启" if site_info.get("wechat_login") else "🔴关闭"
         turnstile = "🟢开启" if site_info.get("turnstile_check") else "🔴关闭"
 
-        draw.text(
+        _draw_text(draw,
             (padding + 28, curr_y),
             "• 邮箱验证注册:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 150, curr_y), email_v, fill=cls.TEXT_PRIMARY, font=font_val
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 380, curr_y),
             "• 微信快捷登录:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 490, curr_y), wechat_l, fill=cls.TEXT_PRIMARY, font=font_val
         )
         curr_y += 28
 
-        draw.text(
+        _draw_text(draw,
             (padding + 28, curr_y),
             "• GitHub 授权:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 150, curr_y), github_o, fill=cls.TEXT_PRIMARY, font=font_val
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 380, curr_y),
             "• 人机安全验证:",
             fill=cls.TEXT_SECONDARY,
             font=font_label,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 490, curr_y), turnstile, fill=cls.TEXT_PRIMARY, font=font_val
         )
 
@@ -762,13 +827,13 @@ class DarkCardRenderer:
             radius=3,
             fill=cls.ACCENT_GREEN,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y - 2),
             f"📡 上游渠道配置 (前 {len(channels)} / 共 {total} 个)",
             fill=cls.TEXT_PRIMARY,
             font=font_title,
         )
-        draw.text(
+        _draw_text(draw,
             (padding + 36, top_y + 26),
             "显示渠道 ID、名称、状态与平均响应延迟",
             fill=cls.TEXT_SECONDARY,
@@ -803,7 +868,7 @@ class DarkCardRenderer:
             )
 
             # Channel ID & name
-            draw.text(
+            _draw_text(draw,
                 (padding + 26, curr_y + 6),
                 f"[{cid}] {cname[:22]}",
                 fill=cls.TEXT_PRIMARY,
@@ -811,7 +876,7 @@ class DarkCardRenderer:
             )
 
             # Status
-            draw.text(
+            _draw_text(draw,
                 (padding + 280, curr_y + 6),
                 status,
                 fill=cls.TEXT_SECONDARY,
@@ -819,7 +884,7 @@ class DarkCardRenderer:
             )
 
             # Weight & Priority
-            draw.text(
+            _draw_text(draw,
                 (padding + 380, curr_y + 6),
                 f"权重:{weight} 优先:{priority}",
                 fill=cls.TEXT_MUTED,
@@ -830,7 +895,7 @@ class DarkCardRenderer:
             lat_display = f"延迟: {resp_str}"
             bbox = draw.textbbox((0, 0), lat_display, font=font_item)
             w = bbox[2] - bbox[0]
-            draw.text(
+            _draw_text(draw,
                 (width - padding - 26 - w, curr_y + 6),
                 lat_display,
                 fill=cls.ACCENT_GREEN

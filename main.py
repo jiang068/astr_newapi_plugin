@@ -1029,6 +1029,10 @@ class NewApiPlugin(Star):
 
         # If NewAPI performance stats are available, merge disk or memory info if remote
         perf = await client.get_performance_stats()
+        logger.info(
+            "[NewAPI DEBUG] Performance Stats: %s",
+            json.dumps(perf, ensure_ascii=False, indent=2)
+        )
         if perf and isinstance(perf, dict):
             disk_info = perf.get("disk_space_info", {})
             if isinstance(disk_info, dict) and disk_info.get("total", 0) > 0:
@@ -1772,35 +1776,3 @@ class NewApiPlugin(Star):
             return await self.restore_data_cmd(event, arg)
         else:
             return await self.menu(event)
-
-    @regex(r"^[!/／#]?newapi(?:\s*(?P<cmd>[^\s]+))?(?:\s+(?P<args>.*))?$")
-    async def no_space_dispatcher(self, event: AstrMessageEvent):
-        """
-        兼容无空格格式的命令调用（例如 /newapi菜单 /newapi余额 /newapi绑定 123 /newapi排行 等）
-        """
-        msg = event.get_message_str().strip()
-        m = re.match(
-            r"^[!/／#]?newapi(?:\s*(?P<cmd>[^\s]+))?(?:\s+(?P<args>.*))?$",
-            msg,
-            re.IGNORECASE,
-        )
-        if not m:
-            return
-
-        cmd = (m.group("cmd") or "").lower().strip()
-        raw_args = (m.group("args") or "").strip()
-
-        if not cmd:
-            return await self.menu(event)
-
-        target = CMD_MAPPING.get(cmd)
-        if not target:
-            for k, v in CMD_MAPPING.items():
-                if cmd == k:
-                    target = v
-                    break
-
-        if not target:
-            return await self.menu(event)
-
-        return await self._dispatch_target(event, target, raw_args)
