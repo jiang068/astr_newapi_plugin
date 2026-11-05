@@ -1028,7 +1028,17 @@ class NewApiPlugin(Star):
         sys_metrics = self._collect_hardware_metrics()
 
         # If NewAPI performance stats are available, merge disk or memory info if remote
-        perf = await client.get_performance_stats()
+        try:
+            perf = await client.get_performance_stats()
+            logger.info(
+                "[NewAPI DEBUG] Performance Stats: %s",
+                json.dumps(perf, ensure_ascii=False, indent=2)
+            )
+        except Exception as e:
+            logger.exception(
+                "[NewAPI] 获取 NewAPI 远程性能数据失败: %s", e
+            )
+            perf = {}
         logger.info(
             "[NewAPI DEBUG] Performance Stats: %s",
             json.dumps(perf, ensure_ascii=False, indent=2)

@@ -138,12 +138,15 @@ class NewAPIClient:
         return res.get("data", [])
 
     async def get_performance_stats(self) -> Dict[str, Any]:
-        """GET /api/performance/stats - Query NewAPI memory/disk/cache stats."""
-        try:
-            res = await self._request("GET", "/api/performance/stats")
-            return res.get("data", res)
-        except Exception:
-            return {}
+        """GET /api/performance/stats"""
+        res = await self._request("GET", "/api/performance/stats")
+
+        print(
+            "[NewAPI DEBUG] Raw Performance Response:",
+            repr(res)
+        )
+
+        return res.get("data", res)
 
     # --- Self / Current User ---
 
